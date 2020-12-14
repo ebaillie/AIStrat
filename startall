@@ -1,0 +1,5 @@
+export db=http://127.0.0.1:5984
+echo $db
+sudo service couchdb restart
+export FLASK_APP=reroute.py
+flask run --host=0.0.0.0 &
