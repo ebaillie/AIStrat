@@ -1,0 +1,181 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "http://github.com/ebaillie/AIStrat/game.schema.json",
+  "title": "Game",
+  "description": "El Grande Game Data",
+  "type": "object",
+  "properties": {
+	
+      "Cards": {
+         "description": "List of Card id and action details, sorted by deck",
+         "type": "object",
+         "patternProperties":{
+            "^(Deck1|Deck2|Deck3|Deck4|Deck5)$":{
+              "patternProperties":{
+                "^[a-zA-Z0-9]*$":{
+                  "type":"object",
+                  "$ref": "#/definitions/card"
+                }
+              }
+            }
+         }
+      },
+		
+      "Name": {
+         "description": "Game name",
+         "type": "string"
+      },
+		
+      "Players": {
+         "description": "List of player identifiers"
+         "type": "array",
+         "items": {"type": "string"}
+      },
+      
+      "Regions": {
+         "description": "List of regions with their details"
+         "type": "array",
+         "items": { "$ref": "#/definitions/region" }
+      },
+      
+      "Scoreboards": {
+         "description": "List of movable scoreboards"
+         "type": "array",
+         "items": { "$ref": "#/definitions/scoreboard" }
+      }
+      
+   },
+  "definitions": {
+    "card":{
+      "required":["actiontype","details","name","text"],
+      "properties":{
+        "actiontype":{"type":"string","pattern":"^(move|score|power|grande|scoreboard|king|uniquescore)$"},
+        "details":{
+          "required":["from","number","numopt","player","to"],
+          "properties":{
+            "from":{}
+            "number":{"type":"number"},
+            "numopt":{"type":"string","pattern":"^(eq|lteq)$"},
+            "player":{"type":"string","pattern":"^(self|foreign|any)$"},
+            "to":{}
+          }
+        },
+        "name":{"type":"string"},
+        "text":{"type":"string"}
+      }
+    },
+    "region":{
+      "type": "object",
+      "patternProperties": {
+        "^[a-zA-Z ]*$":{
+          "required": [ "points" ],
+          "properties": {
+            "active": {"type":"boolean"},
+            "bounds": {              
+              "type": "array",
+              "items": [{"type": "integer"},{"type": "integer"}]
+            },
+            "cabposition":{
+              "type": "object",
+              "properties": {
+               "x": {"type": "number"},
+               "y": {"type": "number"},
+               "z": {"type": "integer"}
+              },
+              "required": ["x","y","z"]
+            }
+            "decal":{
+              "type": "object",
+              "properties": {
+                "file": {"type": "string"},
+                "name": {"type": "string"},
+                "position": {
+                  "type": "object",
+                  "properties": {
+                    "x": {"type": "number"},
+                    "y": {"type": "number"},
+                    "z": {"type": "integer"}
+                  },
+                  "required": ["x","y","z"]
+                }
+                "scale": {
+                  "type": "object",
+                  "properties": {
+                    "x": {"type": "number"},
+                    "y": {"type": "number"},
+                    "z": {"type": "integer"}
+                  },
+                  "required": ["x","y","z"]
+                }
+              },
+            },
+            "grandeposition":{                
+              "type": "object",
+              "properties": {
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "z": {"type": "integer"}
+               },
+               "required": ["x","y","z"]
+            },
+            "kingposition":{                
+              "type": "object",
+              "properties": {
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "z": {"type": "integer"}
+               },
+               "required": ["x","y","z"]
+            },
+            "neighbors":{
+              "type":"array",
+              "items": {"type": "string"}
+            },
+            "points":{
+              "type":"array",
+              "items":{
+                "type": "array",
+                "items": [{"type": "integer"},{"type": "integer"},{"type": "integer"}]
+              }
+             },
+            "scoreboard":{
+              "type": "object",
+              "properties": {
+               "x": {"type": "number"},
+               "y": {"type": "number"},
+               "z": {"type": "integer"}
+              },
+              "required": ["x","y","z"]
+            }
+          }
+        }
+      }      
+    },
+    "scoreboard": {
+      "type": "object",
+      "patternProperties": {
+        "required": [ "points" ],
+        "^[a-zA-Z0-9]*$":{
+          "properties": {
+            "home": {
+              "type": "object",
+              "description": "Physical location of the mobile scoreboard",
+              "properties": {
+               "x": {"type": "number"},
+               "y": {"type": "number"},
+               "z": {"type": "integer"}
+              },
+              "required": ["x","y","z"]
+            },
+            "points": {
+              "type": "array",
+              "description": "Points for first second or third associated with this scoreboard"
+              "items": [{"type": "integer"},{"type": "integer"},{"type": "integer"}]
+            }
+          }
+        }
+      }      
+    }
+  },
+  "required": ["Cards","Name","Players","Regions","Scoreboards"]
+}
