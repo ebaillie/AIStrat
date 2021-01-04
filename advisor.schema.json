@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "http://github.com/ebaillie/AIStrat/advisor.schema.json",
+  "title": "Advisor",
+  "description": "Turn- Phase- and Player-specific play advice for El Grande",
+  "type": "object",
+  "properties": {
+
+      "game": {
+         "description": "Game name",
+         "type": "string"
+      },
+		
+      "player": {
+         "description": "Player recieving the advice",
+         "type": "string"
+      },
+      
+      "turn": {
+         "description": "Turn for which the advice is valid",
+         "type": "number"
+      },
+      
+      "phase": {
+         "description": "Phase for which the advice is valid",
+         "type": "string",
+         "enum": ["start","power","action","score","end"]
+      },
+      
+      "advicetype": {
+         "description": "Type of advice given",
+         "type": "string"
+      },
+      
+      "advice": {
+         "description": "Actual advice given",
+         "type": "object"
+      }
+      
+   },
+  "required": ["game","player","turn","phase","advicetype","advice"]
+}
