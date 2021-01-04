@@ -1,0 +1,127 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "http://github.com/ebaillie/AIStrat/game_history.schema.json",
+  "title": "Game History",
+  "description": "El Grande Turn Data",
+  "type": "object",
+  "properties": {
+
+      "name": {
+         "description": "Game name",
+         "type": "string"
+      },
+		
+      "players": {
+         "description": "List of player identifiers",
+         "type": "array",
+         "items": {"type": "string"}
+      },
+      
+      "king": {
+         "description": "Current King region",
+         "type": "array",
+         "type": "string"
+      },
+      
+      "cards": {
+         "description": "Action cards",
+         "type": "array",
+         "items": {"type": "string"}
+      },
+      
+      "turninfo": {
+         "description": "Current state of play",
+         "type": "object",
+         "required":["phase","playersdone","playersleft","actioncards","powercards","cabsdone","powerplayed","scores"],
+         "properties": { 
+            "phase": {"type":"number"},
+            "playersdone":{"type":"array","items":{"type":"string"}},
+            "playersleft":{"type":"array","items":{"type":"string"}},
+            "actioncards":{
+              "type":"array",
+              "items":{
+                "type":"object",
+                "patternProperties":{
+                  "^[a-zA-Z]*$":{ "type":"string" }
+                }
+              } 
+            },
+            "powercards":{
+              "type":"array",
+              "items":{
+                "type":"object",
+                "patternProperties":{
+                  "^[a-zA-Z]*$":{ "type":"string" }
+                }
+              } 
+            },
+            "actionsdone":{
+              "type":"array",
+              "items":{
+                "type":"object",
+                "patternProperties":{
+                  "^[a-zA-Z]*$":{ "type":"boolean" }
+                }
+              } 
+            },
+            "cabsdone":{
+              "type":"array",
+              "items":{
+                "type":"object",
+                "patternProperties":{
+                  "^[a-zA-Z]*$":{ "type":"boolean" }
+                }
+              } 
+            },
+            "powerplayed":{
+              "type":"array",
+              "items":{
+                "type":"object",
+                "patternProperties":{
+                  "^[a-zA-Z]*$":{ "type":"array","items": {"type": "number"} }
+                }
+              } 
+            },
+            "scores":{
+              "type":"array",
+              "items":{
+                "type":"object",
+                "patternProperties":{
+                  "^[a-zA-Z]*$":{ "type":"number" }
+                }
+              } 
+            },
+         }
+      },
+      
+      "pieces": {
+        "description": "Disposition of Grandes and Caballeros for each player",
+        "type":"array",
+        "items":{
+          "type":"object",
+          "patternProperties":{
+            "^[a-zA-Z]*$":{ 
+              "type":"object",
+              "required":["grande"],
+              "pattern"{
+                "grande":{"type":"string"},
+                "court":{"type":number},
+                "province":{"type":number},
+                "Aragon":{"type":number},
+                "Cataluna":{"type":number},
+                "Castilla la Nueva":{"type":number},
+                "Castilla la Viejo":{"type":number},
+                "Castillo":{"type":number},
+                "Galicia":{"type":number},
+                "Granada":{"type":number},
+                "Pais Vasco":{"type":number},
+                "Sevilla":{"type":number},
+                "Valencia":{"type":number}
+            }
+          }
+        }
+      }
+      
+   },
+  "required": ["name","players","king","cards","turninfo","pieces"]
+}
