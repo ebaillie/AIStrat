@@ -27,19 +27,19 @@
       },
 		
       "Players": {
-         "description": "List of player identifiers"
+         "description": "List of player identifiers",
          "type": "array",
          "items": {"type": "string"}
       },
       
       "Regions": {
-         "description": "List of regions with their details"
+         "description": "List of regions with their details",
          "type": "array",
          "items": { "$ref": "#/definitions/region" }
       },
       
       "Scoreboards": {
-         "description": "List of movable scoreboards"
+         "description": "List of movable scoreboards",
          "type": "array",
          "items": { "$ref": "#/definitions/scoreboard" }
       }
@@ -53,11 +53,25 @@
         "details":{
           "required":["from","number","numopt","player","to"],
           "properties":{
-            "from":{}
+            "from":{
+	      "type":"object",
+	      "properties":{
+	        "region":{"type":"string"},
+		"splitopt":{"type":"string","pattern":"^(all|split)$"},
+		"condition":{"type":"string","pattern":"^(one|two|clock)$"}
+	      }
+	    },
             "number":{"type":"number"},
             "numopt":{"type":"string","pattern":"^(eq|lteq)$"},
             "player":{"type":"string","pattern":"^(self|foreign|any)$"},
-            "to":{}
+            "to":{
+	      "type":"object",
+	      "properties":{
+	        "region":{"type":"string"},
+		"splitopt":{"type":"string","pattern":"^(all|split)$"},
+		"condition":{"type":"string","pattern":"^(one|two|clock)$"}
+	      }
+	    }
           }
         },
         "name":{"type":"string"},
@@ -83,7 +97,7 @@
                "z": {"type": "integer"}
               },
               "required": ["x","y","z"]
-            }
+            },
             "decal":{
               "type": "object",
               "properties": {
@@ -97,7 +111,7 @@
                     "z": {"type": "integer"}
                   },
                   "required": ["x","y","z"]
-                }
+                },
                 "scale": {
                   "type": "object",
                   "properties": {
@@ -169,7 +183,7 @@
             },
             "points": {
               "type": "array",
-              "description": "Points for first second or third associated with this scoreboard"
+              "description": "Points for first second or third associated with this scoreboard",
               "items": [{"type": "integer"},{"type": "integer"},{"type": "integer"}]
             }
           }
