@@ -103,20 +103,20 @@
             "^[a-zA-Z]*$":{ 
               "type":"object",
               "required":["grande"],
-              "pattern"{
+              "pattern":{
                 "grande":{"type":"string"},
-                "court":{"type":number},
-                "province":{"type":number},
-                "Aragon":{"type":number},
-                "Cataluna":{"type":number},
-                "Castilla la Nueva":{"type":number},
-                "Castilla la Viejo":{"type":number},
-                "Castillo":{"type":number},
-                "Galicia":{"type":number},
-                "Granada":{"type":number},
-                "Pais Vasco":{"type":number},
-                "Sevilla":{"type":number},
-                "Valencia":{"type":number}
+                "court":{"type":"number"},
+                "province":{"type":"number"},
+                "Aragon":{"type":"number"},
+                "Cataluna":{"type":"number"},
+                "Castilla la Nueva":{"type":"number"},
+                "Castilla la Viejo":{"type":"number"},
+                "Castillo":{"type":"number"},
+                "Galicia":{"type":"number"},
+                "Granada":{"type":"number"},
+                "Pais Vasco":{"type":"number"},
+                "Sevilla":{"type":"number"},
+                "Valencia":{"type":"number"}
             }
           }
         }
