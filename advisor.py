@@ -64,27 +64,48 @@ def generateAdviceFor(jsonObject):
       
     adviceDB.save(advice)
 
+def initAdviceStructure(player,jsonObject):
+    return {'game':jsonObject['name'],'player':player,'round':jsonObject['turninfo']['round'],
+                  'phase':jsonObject['turninfo']['phase'],'advicetype':'','advice':{}}
 
 #value of each caballero in each region
-def caballeroAdvice(player,round,phase,jsonObject):
+#value of each caballero in each region
+def caballeroAdvice(player,jsonObject):
+    advice = initAdviceStructure(player,jsonObject)
+    advice['advicetype']='caballero'
+    for region in extRegions:
+        advice['advice'][region]=assessCaballeroPoints(player,region,jsonObject)
+    return advice
  
 #possible point value of playing this card in this round
-def cardActionValueAdvice(player,round,phase,jsonObject):
+def cardActionValueAdvice(player,jsonObject):
+    advice = initAdviceStructure(player,jsonObject)
+    return advice
  
 #consequences of putting castillo caballeros in each region
-def castilloAdvice(player,round,phase,jsonObject):
+def castilloAdvice(player,jsonObject):
+    advice = initAdviceStructure(player,jsonObject)
+    return advice
  
 #human-generated explanations of use of current cards
-def explainCardsAdvice(player,round,phase,jsonObject):
+def explainCardsAdvice(player,jsonObject):
+    advice = initAdviceStructure(player,jsonObject)
+    return advice
  
 #whether player's home region is 'under threat' or they have already lost number 1 status there
-def homeReportAdvice(player,round,phase,jsonObject):
+def homeReportAdvice(player,jsonObject):
+    advice = initAdviceStructure(player,jsonObject)
+    return advice
  
 #regions where each player has been scoring historically, whether it's first/second/third, and how many areas the player is scoring.
-def opponentReportAdvice(player,round,phase,jsonObject):
+def opponentReportAdvice(player,jsonObject):
+    advice = initAdviceStructure(player,jsonObject)
+    return advice
  
 #predicted scores for each player based on this round
-def scorePredictionsAdvice(player,round,phase,jsonObject):
+def scorePredictionsAdvice(player,jsonObject):
+    advice = initAdviceStructure(player,jsonObject)
+    return advice
   
 #generate all region ranking data for one region
 #regionName - string
@@ -139,6 +160,7 @@ def rankScore(rank,scores,isGrande=False,isKing=False):
 #determine value of having caballeros in this region, for player,
 #conditional on the other players' caballero counts remaining unchanged
 def assessCaballeroPoints(player,region,jsonObject):
+def assessCaballeroPoints(player,region,jsonObject):
     pieces=jsonObject['pieces']
     pointsPerPiece={}
     playerPieceCount=pieces[player].get(region,0)
@@ -146,23 +168,37 @@ def assessCaballeroPoints(player,region,jsonObject):
     for k in pieces:
         maxPlayerPieceCount=max(maxPlayerPieceCount,pieces[k].get(region,0))
     
+    lastRank=4
+    rankBound=0
+    excess=0
     #calculate from one more than the current maximum, in order to capture all potential advantages
     #add one extra for fencepost reasons
     for i in list(range(1,maxPlayerPieceCount+2)):
         pieces[player][region]=i
         ranks,playerPieces=rankPlayersInRegion(region,pieces)
+        #hold on to the point where the rank improves, if necessary
+        if ranks[player]<lastRank:
+            lastRank=ranks[player]
+            rankBound=i
+        if i==playerPieceCount:
+            excess= i-rankBound
         #print("counterfactual ranking "+str(i))
         score=rankScore(ranks[player],jsonObject['points'][region],pieces.get('grande','')==region,jsonObject['king']==region)
         pointsPerPiece[i]=score/i
         
     #reset the counterfactual, because otherwise it messes with the initial data structure
     #avoiding having to do a deep copy
+    pieceVal=0
     if playerPieceCount>0:
         pieces[player][region]=playerPieceCount
+        pieceVal=pointsPerPiece[playerPieceCount]
     else:
         del pieces[player][region]
+        
+    
         
     maxval = max(pointsPerPiece.values())
     optimals = [k for k in pointsPerPiece if pointsPerPiece[k]==maxval]
     
-    return maxval,optimals
+    retObject={"pieces":playerPieceCount,"value":pieceVal,"excess":excess,"optimals":optimals,"optimalvalues":maxval}
+    return retObject 
