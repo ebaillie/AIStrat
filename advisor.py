@@ -87,45 +87,82 @@ def opponentReportAdvice(player,round,phase,jsonObject):
 def scorePredictionsAdvice(player,round,phase,jsonObject):
   
 #generate all region ranking data for one region
-def rankPlayersInRegion(regionName,jsonObject):
+#regionName - string
+#pieces - dictionary of playername[regionName]:caballeroCount
+def rankPlayersInRegion(regionName,pieces):
     ranks = {}
-    pieces = {}
-    excess = {}
-    for k in jsonObject['pieces']:
-        if regionName in jsonObject['pieces'][k]:
-            pieces[k]=jsonObject['pieces'][k][regionName]
+    playerPieces = {}
 
-    thisCount=0
-    pieceLevel=float('inf')
-    lastKey=None
-    for k,v in sorted(pieces.items(), key=lambda item: item[1],reverse=True):
-        thisCount=thisCount+1
-        currentVal=pieces.get(k,0)
-        print(currentVal)
-        
-        #if the excess for the last key was not already specified (due to a draw), insert it now
-        if lastKey and excess.get(lastKey,-1)==-1:
-            excess[lastKey]=pieceLevel-currentVal
-            
-        if currentVal<pieceLevel:
-            pieceLevel=currentVal
-            thisRank=thisCount
-        elif currentVal==pieceLevel:
-            #excess for equal ranked players must be 1
-            excess[lastKey]=1
-            excess[k]=1
-        else:
-            #a terrible error has occurred - this should never be possible
-            raise Exception("Player ranking algorithm has a bug - fix it!")
-            
-        if currentVal>0:
-            ranks[k]=thisRank
-        
-        lastKey=k
-    
-    #make sure to enter excess data for the last player
-    if lastKey and excess.get(lastKey,-1)==-1:
-        excess[lastKey]=pieceLevel
-        
-    return ranks,pieces,excess
+    for k in pieces:
+        cPieces=pieces[k].get(regionName,0)
+        if cPieces>0:
+            playerPieces[k]=cPieces
+            ranks[k]=1
+            anchorRank=-1
+            for k2 in playerPieces:
+                if k!=k2:
+                    #print("checking "+k+" against "+k2)
+                    if playerPieces[k]>playerPieces[k2]:
+                        #this new one is bigger, push the old one's rank down
+                        ranks[k2]=ranks[k2]+1
+                        #print("downranked "+k2)
+                    elif playerPieces[k]==playerPieces[k2]:
+                        #push the old one's rank down, and make a note of it for the end
+                        ranks[k2]=ranks[k2]+1
+                        anchorRank=ranks[k2]
+                        #print("anchored to "+k2)
+                    else:
+                        #this one is smaller - downrank it
+                        ranks[k]=ranks[k]+1
+                        #print("downranked "+k)
+                #we found an equal rank at some point - that becomes this one's final rank
+                if anchorRank>0:
+                    ranks[k]=anchorRank
+
+    return ranks,playerPieces
   
+#score region for rank and Grande/King constraints
+#rank - numeric rank
+#scores - tuple of (firstplace,secondplace,thirdplace)
+def rankScore(rank,scores,isGrande=False,isKing=False):
+    finalScore=0
+    if rank>0 and rank<=3:
+        finalScore=scores[rank-1] #fencepost
+    
+    if rank==1:
+        if isGrande:
+            finalScore=finalScore+2
+        if isKing:
+            finalScore=finalScore+2
+    return finalScore
+
+#determine value of having caballeros in this region, for player,
+#conditional on the other players' caballero counts remaining unchanged
+def assessCaballeroPoints(player,region,jsonObject):
+    pieces=jsonObject['pieces']
+    pointsPerPiece={}
+    playerPieceCount=pieces[player].get(region,0)
+    maxPlayerPieceCount=0
+    for k in pieces:
+        maxPlayerPieceCount=max(maxPlayerPieceCount,pieces[k].get(region,0))
+    
+    #calculate from one more than the current maximum, in order to capture all potential advantages
+    #add one extra for fencepost reasons
+    for i in list(range(1,maxPlayerPieceCount+2)):
+        pieces[player][region]=i
+        ranks,playerPieces=rankPlayersInRegion(region,pieces)
+        #print("counterfactual ranking "+str(i))
+        score=rankScore(ranks[player],jsonObject['points'][region],pieces.get('grande','')==region,jsonObject['king']==region)
+        pointsPerPiece[i]=score/i
+        
+    #reset the counterfactual, because otherwise it messes with the initial data structure
+    #avoiding having to do a deep copy
+    if playerPieceCount>0:
+        pieces[player][region]=playerPieceCount
+    else:
+        del pieces[player][region]
+        
+    maxval = max(pointsPerPiece.values())
+    optimals = [k for k in pointsPerPiece if pointsPerPiece[k]==maxval]
+    
+    return maxval,optimals
