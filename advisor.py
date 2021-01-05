@@ -14,7 +14,10 @@ couch = couchdb.Server('http://'+credentials+'@'+couchip)
 adviceTypes = {'power':['opponent_report','score_predictions','explain_cards','home_report'], 
   'action':['caballero_value','card_action_value','opponent_report','score_predictions','explain_cards','home_report'],
   'scoring':['castillo','opponent_report','score_predictions']}
-
+#regions, as in TTS code
+regions=["Galicia","Pais Vasco","Aragon","Cataluna","Castilla la Vieja","Castilla la Nueva","Valencia","Sevilla","Granada"]
+extRegions=regions.copy()
+extRegions.append("Castillo")
 
 #invoked when the Flask listener detects data coming in to the db
 #assume that the data is 'body' text about to be forwarded to db - we inspect this to see what sort of
@@ -82,3 +85,47 @@ def opponentReportAdvice(player,round,phase,jsonObject):
  
 #predicted scores for each player based on this round
 def scorePredictionsAdvice(player,round,phase,jsonObject):
+  
+#generate all region ranking data for one region
+def rankPlayersInRegion(regionName,jsonObject):
+    ranks = {}
+    pieces = {}
+    excess = {}
+    for k in jsonObject['pieces']:
+        if regionName in jsonObject['pieces'][k]:
+            pieces[k]=jsonObject['pieces'][k][regionName]
+
+    thisCount=0
+    pieceLevel=float('inf')
+    lastKey=None
+    for k,v in sorted(pieces.items(), key=lambda item: item[1],reverse=True):
+        thisCount=thisCount+1
+        currentVal=pieces.get(k,0)
+        print(currentVal)
+        
+        #if the excess for the last key was not already specified (due to a draw), insert it now
+        if lastKey and excess.get(lastKey,-1)==-1:
+            excess[lastKey]=pieceLevel-currentVal
+            
+        if currentVal<pieceLevel:
+            pieceLevel=currentVal
+            thisRank=thisCount
+        elif currentVal==pieceLevel:
+            #excess for equal ranked players must be 1
+            excess[lastKey]=1
+            excess[k]=1
+        else:
+            #a terrible error has occurred - this should never be possible
+            raise Exception("Player ranking algorithm has a bug - fix it!")
+            
+        if currentVal>0:
+            ranks[k]=thisRank
+        
+        lastKey=k
+    
+    #make sure to enter excess data for the last player
+    if lastKey and excess.get(lastKey,-1)==-1:
+        excess[lastKey]=pieceLevel
+        
+    return ranks,pieces,excess
+  
