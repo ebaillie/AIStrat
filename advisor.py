@@ -6,6 +6,7 @@ import requests
 import sys
 import couchdb
 import json
+import copy
 
 couchip = '127.0.0.1:5984'
 credentials = 'admin:elderberry'
@@ -85,6 +86,29 @@ def cardActionValueAdvice(player,jsonObject):
 #consequences of putting castillo caballeros in each region
 def castilloAdvice(player,jsonObject):
     advice = initAdviceStructure(player,jsonObject)
+    advice['advicetype']='castillo'
+    pieces=copy.deepcopy(jsonObject['pieces'])
+    castilloPieceCount=pieces[player].get('Castillo',0)
+    if castilloPieceCount==0:
+        return advice
+    
+    #counterfactuals for points available from putting castillo cabs in each region
+    #simple strategy for the moment - only consider your own moves and points
+    del pieces[player]['Castillo']
+    for region in regions:
+        curRanks,curPlayerPieces=rankPlayersInRegion(region,pieces)
+        pieces[player][region]=pieces[player].get(region,0)+castilloPieceCount
+        newRanks,newPlayerPieces=rankPlayersInRegion(region,pieces)
+        if curRanks.get(player,4)>3:
+            newScore=rankScore(newRanks[player],jsonObject['points'][region],pieces.get('grande','')==region,jsonObject['king']==region)
+            advice['advice'][region]=newScore            
+        elif curRanks.get(player,4)==newRanks[player]:
+            advice['advice'][region]=0
+        else:
+            curScore=rankScore(curRanks[player],jsonObject['points'][region],pieces.get('grande','')==region,jsonObject['king']==region)
+            newScore=rankScore(newRanks[player],jsonObject['points'][region],pieces.get('grande','')==region,jsonObject['king']==region)
+            advice['advice'][region]=newScore-curScore
+            
     return advice
  
 #human-generated explanations of use of current cards
