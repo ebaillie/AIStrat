@@ -34,29 +34,28 @@ def processDBInput(inputData):
 def generateAdviceFor(jsonObject):
   assert(jsonObject['turninfo']!=None)
   if len(jsonObject['turninfo']['playersleft'])>0:
-    player=jsonObject['turninfo']['playersleft'][1]
-    round=jsonObject['turninfo']['round']
+    player=jsonObject['turninfo']['playersleft'][0]
     phase=jsonObject['turninfo']['phase']
     relevantAdvice = adviceTypes.get(phase,[])
     for atype in relevantAdvice:
-      makeAdvice(player,round,phase,atype,jsonObject)
+      makeAdvice(player,atype,jsonObject)
       
  #generate specified advice for specified player/round/phase based on this jsonObject
- def makeAdvice(player,round,phase,atype,jsonObject):
+def makeAdvice(player,atype,jsonObject):
     if atype=='caballero_value':
-      advice = caballeroAdvice(player,round,phase,jsonObject)
+      advice = caballeroAdvice(player,jsonObject)
     elif atype=='card_action_value':
-      advice = cardActionValueAdvice(player,round,phase,jsonObject)
+      advice = cardActionValueAdvice(player,jsonObject)
     elif atype=='castillo':
-      advice = castilloAdvice(player,round,phase,jsonObject)
+      advice = castilloAdvice(player,jsonObject)
     elif atype=='explain_cards':
-      advice = explainCardsAdvice(player,round,phase,jsonObject)
+      advice = explainCardsAdvice(player,jsonObject)
     elif atype=='home_report':
-      advice = homeReportAdvice(player,round,phase,jsonObject)
+      advice = homeReportAdvice(player,jsonObject)
     elif atype=='opponent_report':
-      advice = opponentReportAdvice(player,round,phase,jsonObject)
+      advice = opponentReportAdvice(player,jsonObject)
     elif atype=='score_predictions':
-      advice = scorePredictionsAdvice(player,round,phase,jsonObject)
+      advice = scorePredictionsAdvice(player,jsonObject)
       
     try:
       adviceDB = couch['advice']
@@ -183,7 +182,6 @@ def rankScore(rank,scores,isGrande=False,isKing=False):
 
 #determine value of having caballeros in this region, for player,
 #conditional on the other players' caballero counts remaining unchanged
-def assessCaballeroPoints(player,region,jsonObject):
 def assessCaballeroPoints(player,region,jsonObject):
     pieces=jsonObject['pieces']
     pointsPerPiece={}
