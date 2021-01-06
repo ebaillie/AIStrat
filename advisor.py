@@ -24,6 +24,7 @@ extRegions.append("Castillo")
 #assume that the data is 'body' text about to be forwarded to db - we inspect this to see what sort of
 #advice needs to be generated. Input data should be a byte string with JSON
 def processDBInput(inputData):
+  print('processing')
   assert(type(inputData)==bytes)
   jsonObject=json.loads(inputData.decode('utf-8'))
   if jsonObject.get('turninfo')!=None:
@@ -32,12 +33,14 @@ def processDBInput(inputData):
 #input data for a turn and phase - generate some advice, depending on what turn, phase and player we have here
 #structure of jsonObject should be game_history
 def generateAdviceFor(jsonObject):
+  print('advice')
   assert(jsonObject['turninfo']!=None)
   if len(jsonObject['turninfo']['playersleft'])>0:
     player=jsonObject['turninfo']['playersleft'][0]
     phase=jsonObject['turninfo']['phase']
     relevantAdvice = adviceTypes.get(phase,[])
     for atype in relevantAdvice:
+      print(atype)
       makeAdvice(player,atype,jsonObject)
       
  #generate specified advice for specified player/round/phase based on this jsonObject
@@ -58,9 +61,9 @@ def makeAdvice(player,atype,jsonObject):
       advice = scorePredictionsAdvice(player,jsonObject)
       
     try:
-      adviceDB = couch['advice']
+      adviceDB = couch['game_advice']
     except:
-      adviceDB = couch.create('advice')
+      adviceDB = couch.create('game_advice')
       
     adviceDB.save(advice)
 
