@@ -15,7 +15,7 @@ _DEFAULT_BOARD = 'BCDEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 _DEFAULT_GRANDES = [1,1,1,1]
 _DEFAULT_KING = 1
 
-class CastilloGameState(object):
+class CastilloGameState(pyspiel.State):
     """El Grande Castillo Game - subgame of El Grande which decides on the optimum positioning of
     pieces moved from the Castillo in the scoring phase of rounds 3/6/9
     Parameters:
@@ -32,6 +32,7 @@ class CastilloGameState(object):
         self._num_players = min(_MAX_PLAYERS,players)
         self._is_terminal = False
         self._history = []
+        self._initboard = board 
         self._board = board
         self._win_points = np.full(players, 0)
         self._rewards = rewards
@@ -85,8 +86,8 @@ class CastilloGameState(object):
                     final_scores[k]=final_scores[k]+2
                 if self._king==region:
                     final_scores[k]=final_scores[k]+2
-        print("rewards for region "+str(region))
-        print(final_scores)
+        #print("rewards for region "+str(region))
+        #print(final_scores)
         return final_scores
     
     def _score_all_regions(self):
@@ -227,7 +228,14 @@ class CastilloGameState(object):
         return self._board
 
     def clone(self):
-        return copy.deepcopy(self)
+        #return copy.deepcopy(self)
+        myclone = CastilloGameState(self._game,self._num_players,self._rewards,self._initboard,self._grandes,self._king)
+        myclone._cur_player = self._cur_player
+        myclone._is_terminal = self._is_terminal
+        myclone._history = self._history.copy()
+        myclone._board = self._board
+        myclone._win_points = self._win_points.copy()
+        return myclone
 
 
 class CastilloGame(object):
