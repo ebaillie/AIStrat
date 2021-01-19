@@ -40,8 +40,8 @@ _ST_IDX_GAMECONTROL = _ST_IDX_DECKPASTS + _NUM_FULL_DECKS #round, phase and scor
 _ST_IDX_END = _ST_IDX_GAMECONTROL + 1
 
 _ST_IDY_CABS = 0 #start of cab counts, in region columns
-_ST_IDY_GRANDES = _ST_IDX_CABS + _MAX_PLAYERS #start of grande locations, in region columns
-_ST_IDY_KING = _ST_IDX_GRANDES + _MAX_PLAYERS
+_ST_IDY_GRANDES = _ST_IDY_CABS + _MAX_PLAYERS #start of grande locations, in region columns
+_ST_IDY_KING = _ST_IDY_GRANDES + _MAX_PLAYERS
 _ST_IDY_SECRETSELS = _ST_IDY_KING + 1
 
 _ST_IDY_ROUND = 0 #start of gamecontrol column - roundcount
@@ -172,16 +172,10 @@ class ElGrandeGameState(object):
             self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACT_DONE]=int(data['actionsdone'][data['playersleft'][0]])
             self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CAB_DONE]=int(data['cabsdone'][data['playersleft'][0]])
                   
-    #FROM CASTILLO GAME - AUDIT
-    def _extract_region_counts(self,region):
-        assert(region>=0 and region<=_NUM_REGIONS)
-        region_substr = self._board[(region*self._num_players):((region+1)*self._num_players)]
-        counts = [ord(s) - ord(_ZERO_CHAR) for s in region_substr]
-        return counts
 
     def _score_one_region(self,region):
-        assert(region>0 and region<=_NUM_REGIONS) #NOTE - can't score Castillo region here
-        cab_counts = self._extract_region_counts(region)
+        assert(region>0 and region<=_NUM_EXT_REGIONS) 
+        cab_counts = self._state_matrix[_ST_IDX_REGIONS+region,_ST_IDY_CABS : (_ST_IDY_CABS+self._num_players) ]
     
         #rank and score the counts
         ranks={}
@@ -223,12 +217,6 @@ class ElGrandeGameState(object):
             final_scores = final_scores+self._score_one_region(r+1)
         return final_scores
     
-    def _all_moved(self):
-        #nothing left in castillo
-        for i in range(self._num_players):
-            if self._board[i]!=_ZERO_CHAR:
-                return False
-        return True
   
     # OpenSpiel (PySpiel) API functions are below. These need to be provided by
     # every game. Some not-often-used methods have been omitted.
@@ -295,6 +283,34 @@ class ElGrandeGameState(object):
         """Applies the specified action to the state"""
 
         #TODO - state changes due to specific action
+        #possible actions: _ACT_DEAL, _ACT_CARDS (+ _NUM_ACTION_CARDS), _ACT_POWERS (+ _NUM_POWERS), _ACT_RETRIEVE_POWERS (+ _NUM_POWERS), 
+        # _ACT_DECIDE_CAB, _ACT_DECIDE_ACT = _ACT_DECIDE_CAB + 1, _ACT_CHOOSE_SECRETS (+ _NUM_REGIONS), _ACT_MOVE_GRANDES (+ _NUM_REGIONS), 
+        # _ACT_MOVE_KINGS (+ _NUM_REGIONS), _ACT_CAB_MOVES (+ _NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS)
+
+        if action==_ACT_DEAL:
+            self._deal_all_decks
+        elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
+            self._assign_card(action - _ACT_CARDS)
+        elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWERS:
+            self._assign_power(action - _ACT_POWERS)
+        elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + _NUM_POWERS:
+            self._retrieve_power(action - _ACT_RETRIEVE_POWERS)
+        elif action == _ACT_DECIDE_CAB:
+            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_PHASE]=self._get_phaseid(data['actioncab'])
+        elif action == _ACT_DECIDE_ACT:
+            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_PHASE]=self._get_phaseid(data['actioncard'])
+        elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + _NUM_REGIONS:
+            self._set_secret_region(action - _ACT_CHOOSE_SECRETS)
+        elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + _NUM_REGIONS:
+            self._move_grande(action - _ACT_MOVE_GRANDES)
+        elif action >= _ACT_MOVE_KINGS and action < _ACT_MOVE_KINGS + _NUM_REGIONS:
+            self._move_king(action - _ACT_MOVE_KINGS)
+        else:
+            #moving a caballero fromregion, toregion, ofplayer
+            fromRegion = (action- _ACT_CAB_MOVES)//(_NUM_CAB_AREAS * _MAX_PLAYERS)
+            toRegion = ((action- _ACT_CAB_MOVES)%(_NUM_CAB_AREAS * _MAX_PLAYERS))//_MAX_PLAYERS
+            ofPlayer = (action- _ACT_CAB_MOVES)%_MAX_PLAYERS
+            self._move_one_cab(fromRegion, toRegion, ofPlayer)        
     
         if self._is_game_end():
             final_scores = self._score_all_regions()
