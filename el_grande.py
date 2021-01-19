@@ -16,9 +16,9 @@ _NUM_PLAYABLE_DECKS = 5 #include also the single-card 'Deck5'
 _MAX_DECK_COUNT = 11 #greatest number of cards in any single deck
 _NUM_ACTION_CARDS = 43 #total number of action cards in all decks
 _NUM_POWER_CARDS = 13
-#game phases start,power,actionchoice,actioncard,actioncabs,score
-_NUM_PHASES = 6
-_PHASE_NAMES = ['start','power','action','actioncard','actioncab','score']
+#game phases start,power,action,actionchoice,actioncard,actioncabs,score
+_NUM_PHASES = 7
+_PHASE_NAMES = ['start','power','action','actionchoose','actioncard','actioncab','score']
 _MAX_TURNS = 9 #full game has 9 turns, but we can specify fewer if need be
 
 
@@ -57,11 +57,12 @@ _ST_IDCH = 5 #highest number in the matrix should be 32, so want 5 channels
 
 #list of action numbers from 0 up
 
-_ACT_CARDS = 0 #start of 'select a card' actions
+_ACT_DEAL = 0
+_ACT_CARDS = 1 #start of 'select a card' actions
 _ACT_POWERS = _ACT_CARDS + _NUM_ACTION_CARDS #select power cards
 _ACT_RETRIEVE_POWERS = _ACT_POWERS + _NUM_POWERS #get back an old power card
-_ACT_DECIDE_CABS = _ACT_RETRIEVE_POWERS + _NUM_POWERS #decide to place cabs first
-_ACT_DECIDE_ACT = _ACT_DECIDE_CABS + 1 #decide to play the action card first
+_ACT_DECIDE_CAB = _ACT_RETRIEVE_POWERS + _NUM_POWERS #decide to place cabs first
+_ACT_DECIDE_ACT = _ACT_DECIDE_CAB + 1 #decide to play the action card first
 _ACT_CHOOSE_SECRETS = _ACT_DECIDE_ACT+1 #choose one secret region
 _ACT_MOVE_GRANDES = _ACT_CHOOSE_SECRETS + _NUM_REGIONS
 _ACT_MOVE_KINGS = _ACT_MOVE_GRANDES + _NUM_REGIONS
@@ -266,7 +267,29 @@ class ElGrandeGameState(object):
             return []
         else:
             #TODO: code to generate the actual legal actions
-            return [1]*_ACT_END
+            mask=[0]*_ACT_END
+            if self._phase_name()=='start':
+                mask[_ACT_DEAL]=1
+                return mask
+            elif self._phase_name()=='power':
+                for i in range(_NUM_POWER_CARDS):
+                    mask[_ACT_POWERS+i]=1
+                return mask
+            elif self._phase_name()=='action':
+                for i in range(_NUM_ACTION_CARDS):
+                    mask[_ACT_CARDS+i]=1
+                return mask
+            elif self._phase_name()=='actionchoose':
+                mask[_ACT_DECIDE_CAB]=1
+                mask[_ACT_DECIDE_ACT]=1
+            elif self._phase_name()=='actioncard':
+            elif self._phase_name()=='actioncab':
+            else:
+                #must be score - choose a secret region
+                for i in range(_NUM_REGIONS):
+                    mask[_ACT_CHOOSE_SECRETS+i]=1
+                return mask
+                
 
     def apply_action(self, action):
         """Applies the specified action to the state"""
@@ -307,8 +330,10 @@ class ElGrandeGameState(object):
         return self.returns()[player]
 
     def is_chance_node(self):
-        #TODO - sometimes it is
-        return False
+        if self._phase_name()=='start':
+            return True
+        else:
+            return False
 
     def is_simultaneous_node(self):
         return False
