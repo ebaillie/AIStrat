@@ -14,6 +14,7 @@ _NUM_CAB_AREAS = _NUM_EXT_REGIONS + 2 #areas caballeros can be placed, including
 _NUM_FULL_DECKS = 4 #decks with multiple cards in them
 _NUM_PLAYABLE_DECKS = 5 #include also the single-card 'Deck5'
 _MAX_DECK_COUNT = 11 #greatest number of cards in any single deck
+_NUM_ACTION_CARDS = 43 #total number of action cards in all decks
 _NUM_POWER_CARDS = 13
 #game phases start,power,actionchoice,actioncard,actioncabs,score
 _NUM_PHASES = 6
@@ -53,6 +54,19 @@ _ST_IDY_CAB_DONE = _ST_IDY_ACT_DONE + 1 #were caballeros moved for the current p
 _ST_IDY_END = max((_ST_IDY_SECRETSELS+_MAX_PLAYERS),(_ST_IDY_CAB_DONE+1),_NUM_POWER_CARDS,_MAX_DECK_COUNT) #current max should be 16
 
 _ST_IDCH = 5 #highest number in the matrix should be 32, so want 5 channels
+
+#list of action numbers from 0 up
+
+_ACT_CARDS = 0 #start of 'select a card' actions
+_ACT_POWERS = _ACT_CARDS + _NUM_ACTION_CARDS #select power cards
+_ACT_RETRIEVE_POWERS = _ACT_POWERS + _NUM_POWERS #get back an old power card
+_ACT_DECIDE_CABS = _ACT_RETRIEVE_POWERS + _NUM_POWERS #decide to place cabs first
+_ACT_DECIDE_ACT = _ACT_DECIDE_CABS + 1 #decide to play the action card first
+_ACT_CHOOSE_SECRETS = _ACT_DECIDE_ACT+1 #choose one secret region
+_ACT_MOVE_GRANDES = _ACT_CHOOSE_SECRETS + _NUM_REGIONS
+_ACT_MOVE_KINGS = _ACT_MOVE_GRANDES + _NUM_REGIONS
+_ACT_CAB_MOVES = _ACT_MOVE_KINGS + _NUM_REGIONS
+_ACT_END = _ACT_CAB_MOVES + (_NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS) #combos of moving a cab from region, to region, of player
 
 class ElGrandeGameState(object):
     """El Grande Game in open_spiel format
@@ -94,6 +108,7 @@ class ElGrandeGameState(object):
         self._players = jsonData["Players"]
         self._num_players = len(self._players)
         self._cards = jsonData["Cards"]
+        assert(len(self._cards)==_NUM_ACTION_CARDS)
         #cards all named 'Deckn.cardname' - separate into decks for easier processing later
         for key in self._cards.keys():
             cardname = self._cards[key]["name"]
@@ -234,7 +249,7 @@ class ElGrandeGameState(object):
         elif self.is_terminal():
             return []
         else:
-            return range(_NUM_ACTIONS)
+            return range(_ACT_END)
 
     def legal_actions_mask(self, player=None):
         """Get a list of legal actions.
@@ -251,7 +266,7 @@ class ElGrandeGameState(object):
             return []
         else:
             #TODO: code to generate the actual legal actions
-            return [1]*_NUM_ACTIONS
+            return [1]*_ACT_END
 
     def apply_action(self, action):
         """Applies the specified action to the state"""
@@ -313,7 +328,7 @@ class ElGrandeGameState(object):
         raise NotImplementedError  # Only applies to simultaneous move games
 
     def num_distinct_actions(self):
-        return _NUM_ACTIONS
+        return _ACT_END
 
     def num_players(self):
         return self._num_players
@@ -353,10 +368,10 @@ class ElGrandeGame(object):
         return ElGrandeGameState(self,players)
 
     def num_distinct_actions(self):
-        return _NUM_ACTIONS
+        return _ACT_END
 
     def policy_tensor_shape(self):
-        return (_NUM_ACTIONS, 1)
+        return (_ACT_END, 1)
 
     def clone(self):
         return ElGrandeGame()
