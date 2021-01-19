@@ -1,5 +1,6 @@
 import copy
 import pickle
+import json
 
 import numpy as np
 
@@ -16,6 +17,7 @@ _MAX_DECK_COUNT = 11 #greatest number of cards in any single deck
 _NUM_POWER_CARDS = 13
 #game phases start,power,actionchoice,actioncard,actioncabs,score
 _NUM_PHASES = 6
+_PHASE_NAMES = ['start','power','action','actioncard','actioncab','score']
 _MAX_TURNS = 9 #full game has 9 turns, but we can specify fewer if need be
 
 
@@ -33,16 +35,22 @@ _ST_IDX_POWERS = _ST_IDX_PROVINCE + 1 #start of current power cards
 _ST_IDX_POWERPASTS = _ST_IDX_POWERS + _MAX_PLAYERS
 _ST_IDX_DECKS = _ST_IDX_POWERPASTS + _MAX_PLAYERS
 _ST_IDX_DECKPASTS = _ST_IDX_DECKS + _NUM_FULL_DECKS
-_ST_IDX_SCORES = _ST_IDX_DECKPASTS + _NUM_FULL_DECKS
-_ST_IDX_GAMECONTROL = _ST_IDX_SCORES + _MAX_PLAYERS #phase info and player order info
-_ST_IDX_MOVECONTROL = _ST_IDX_GAMECONTROL + 1 #state info for caballero movement
-_ST_IDX_END = _ST_IDX_MOVECONTROL + 1
+_ST_IDX_GAMECONTROL = _ST_IDX_DECKPASTS + _NUM_FULL_DECKS #round, phase and score info and player order info
+_ST_IDX_END = _ST_IDX_GAMECONTROL + 1
 
 _ST_IDY_CABS = 0 #start of cab counts, in region columns
 _ST_IDY_GRANDES = _ST_IDX_CABS + _MAX_PLAYERS #start of grande locations, in region columns
 _ST_IDY_KING = _ST_IDX_GRANDES + _MAX_PLAYERS
 _ST_IDY_SECRETSELS = _ST_IDY_KING + 1
-_ST_IDY_END = max((_ST_IDY_SECRETSELS+_MAX_PLAYERS),_NUM_POWER_CARDS,_MAX_DECK_COUNT) #current max should be 16
+
+_ST_IDY_ROUND = 0 #start of gamecontrol column - roundcount
+_ST_IDY_PHASE = 1
+_ST_IDY_SCORES = 2 #scores of player1,player2,...
+_ST_IDY_PLAYER_QUEUE = _ST_IDY_SCORES + _MAX_PLAYERS
+_ST_IDY_ACT_DONE = _ST_IDY_PLAYER_QUEUE + _MAX_PLAYERS #was the card action taken for the current player
+_ST_IDY_CAB_DONE = _ST_IDY_ACT_DONE + 1 #were caballeros moved for the current player
+
+_ST_IDY_END = max((_ST_IDY_SECRETSELS+_MAX_PLAYERS),(_ST_IDY_CAB_DONE+1),_NUM_POWER_CARDS,_MAX_DECK_COUNT) #current max should be 16
 
 _ST_IDCH = 5 #highest number in the matrix should be 32, so want 5 channels
 
@@ -50,17 +58,105 @@ class ElGrandeGameState(object):
     """El Grande Game in open_spiel format
     """
 
-    def __init__(self, game, players):
+    def __init__(self, game):
         self._game = game
         self._cur_player = 0
-        self._num_players = min(_MAX_PLAYERS,players)
+        self._num_players = 0
         self._is_terminal = False
         self._history = []
         self._win_points = np.full(players, 0)
         self._winner = False
+        self._state_matrix = np.full((_ST_IDX_END,_ST_IDY_END),0)
+        self._cards = [] #cards will be loaded at state initialisation
+        self._decks = {1:[],2:[],3:[],4:[],5:[]} #same cards, organised by deck
+        self._regions = []
+        self._players = []
+        self._end_turn = _MAX_TURNS #default end turn is 9
         
     # Helper functions (not part of the OpenSpiel API).
+    
+    #info about card names and abilities, region names, player colours
+    
+    def _get_rid(self,regionName):
+        return self._regions.index(regionName)
+    
+    def _get_pid(self,playerName):
+        return self._players.index(playerName)
 
+    def _get_cid(self,cardName):
+        return self._cards.index(cardName)
+
+    def _get_phaseid(self,phaseName):
+        return _PHASE_NAMES.index(phaseName)
+
+    def _load_game_info(self,jsonData):
+        self._regions = jsonData["Regions"]
+        self._players = jsonData["Players"]
+        self._num_players = len(self._players)
+        self._cards = jsonData["Cards"]
+        #cards all named 'Deckn.cardname' - separate into decks for easier processing later
+        for key in self._cards.keys():
+            cardname = self._cards[key]["name"]
+            decknumber = int(cardname[4])
+            self._decks[decknumber].append(key)
+            
+    #turn all relevant state info from DB format into game format
+    def _load_game_state(self,jsonData):
+        self._state_matrix_add_king(jsonData['king'])
+        self._state_matrix_add_cabs_grandes(jsonData['pieces'])
+        self._state_matrix_add_turn_info(jsonData['turninfo'])
+        #TODO - action cards done, available, currently with player
+        
+    def _state_matrix_add_king(self,region_name):
+        region_id = self._get_rid(region_name)
+        assert(region_id < _ST_IDX_CASTILLO )
+        self._state_matrix[(_ST_IDX_REGIONS+region_id),_ST_IDY_KING]=1
+        
+    def _state_matrix_add_cabs_grandes(self,data):
+        for player_name in data.keys():
+            player_id = self._get_pid(player_name)
+            for key in data[player_name].keys():
+                if key=="grande":
+                    region_id = self._get_region(data[player_name][key])
+                    assert(region_id < _ST_IDX_CASTILLO)
+                    self._state_matrix[(_ST_IDX_REGIONS+region_id),_ST_IDY_GRANDES + player_id]=1
+                else:
+                    region_id = self._get_region(key)
+                    assert(region_id < _ST_IDX_POWERS)
+                    self._state_matrix[(_ST_IDX_REGIONS+region_id),_ST_IDY_CABS + player_id]=data[player_name][key]
+
+    def _state_matrix_add_turn_info(self,data):
+        #power cards
+        for player_name in data['powercards'].keys()
+            player_id = self._get_pid(player_name)
+            power_id = data['powercards'][player_name]
+            assert(power_id <= _NUM_POWER_CARDS and power_id > 0) #power_id from 1 to _NUM_POWER_CARDS
+            self._state_matrix[(_ST_IDX_POWERS+player_id),(power_id-1)]=1
+        #past power cards
+        for player_name in data['powerplayed'].keys()
+            player_id = self._get_pid(player_name)
+            for power_id in data['powercards'][player_name]:
+                assert(power_id <= _NUM_POWER_CARDS and power_id > 0) #power_id from 1 to _NUM_POWER_CARDS
+                self._state_matrix[(_ST_IDX_POWERPASTS+player_id),(power_id-1)]=1
+        #round
+        self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ROUND]=data['round']
+        #phase
+        self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_PHASE]=self._get_phaseid(data['phase'])
+        #score for each player
+        for player_name in data['scores'].keys()
+            player_id = self._get_pid(player_name)
+            score = data['scores'][player_name]
+            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_SCORES+player_id]=score
+        #queue
+        player_queue = data['playersleft'][1:] #skip the first element, since that's the current player
+        for k in range(len(player_queue)):
+            self._state_matrix[_ST_IDX_GAMECONTROL,(_ST_IDY_PLAYER_QUEUE+k)]=self._get_pid(player_queue[k])
+        #action and/or cabs for current player
+        if len(data['playersleft'])>0:
+            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACT_DONE]=int(data['actionsdone'][data['playersleft'][0]])
+            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CAB_DONE]=int(data['cabsdone'][data['playersleft'][0]])
+                  
+    #FROM CASTILLO GAME - AUDIT
     def _extract_region_counts(self,region):
         assert(region>=0 and region<=_NUM_REGIONS)
         region_substr = self._board[(region*self._num_players):((region+1)*self._num_players)]
