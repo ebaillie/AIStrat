@@ -238,6 +238,19 @@ class ElGrandeGameState(object):
         assert(self._state_matrix[from_region,of_player]>0)
         self._state_matrix[from_region,of_player] = self._state_matrix[from_region,of_player] - 1
         self._state_matrix[to_region,of_player] = self._state_matrix[to_region,of_player] + 1
+        #TODO - add move info
+        
+    def _region_str(self,region_id):
+        all_region_names = self._regions + ["Castillo","court","province"]
+        retstr = all_region_names[region_id] + " :" + "|".join([str(i) for i in self._state_matrix[region_id,_ST_IDY_CABS:(_ST_IDY_CABS + self._num_players)]])
+        return retstr
+    
+    def _power_str(self,player_id):
+        current = str(self._state_matrix[_ST_IDX_POWERS+player_id].index(1))
+        past = [str(i) for i in self._state_matrix[_ST_IDX_POWERS+player_id,:_NUM_POWER_CARDS]]
+        return str(player_id) + ": " + current + " (" + ",".join(past) + ")"
+                
+    def _action_str(self):
 
     def _score_one_region(self,region):
         assert(region>0 and region<=_NUM_EXT_REGIONS) 
@@ -486,7 +499,13 @@ class ElGrandeGameState(object):
         #format for state matrix - board elements with slash-separated player cab numbers, Grande player IDs, King
         #                        - power cards by player
         #                        - action cards by deck, replacing name with playerID if played
-        return ""
+        lines = []
+        for i in range(_NUM_CAB_REGIONS):
+            lines = lines + self._region_str(i)
+        for i in range(self._num_players):
+            lines = lines + self._power_str(i)
+        lines = lines + self._action_str()
+        return "\n".join(lines)
 
     def clone(self):
         #TODO - if game is changed to inherit from pyspiel, this might need changing
