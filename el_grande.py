@@ -3,6 +3,7 @@ import pickle
 import json
 
 import numpy as np
+import random
 
 import pyspiel
 
@@ -37,21 +38,24 @@ _ST_IDX_POWERPASTS = _ST_IDX_POWERS + _MAX_PLAYERS
 _ST_IDX_DECKS = _ST_IDX_POWERPASTS + _MAX_PLAYERS
 _ST_IDX_DECKPASTS = _ST_IDX_DECKS + _NUM_FULL_DECKS
 _ST_IDX_GAMECONTROL = _ST_IDX_DECKPASTS + _NUM_FULL_DECKS #round, phase and score info and player order info
-_ST_IDX_END = _ST_IDX_GAMECONTROL + 1
+_ST_IDX_GAMECONTROL2 = _ST_IDX_GAMECONTROL + 1 #split over 2 columns for space efficiency
+_ST_IDX_END = _ST_IDX_GAMECONTROL2 + 1
 
 _ST_IDY_CABS = 0 #start of cab counts, in region columns
 _ST_IDY_GRANDES = _ST_IDY_CABS + _MAX_PLAYERS #start of grande locations, in region columns
 _ST_IDY_KING = _ST_IDY_GRANDES + _MAX_PLAYERS
 _ST_IDY_SECRETSELS = _ST_IDY_KING + 1
 
-_ST_IDY_ROUND = 0 #start of gamecontrol column - roundcount
+_ST_IDY_ROUND = 0 #start of gamecontrol1 column - roundcount
 _ST_IDY_PHASE = 1
-_ST_IDY_SCORES = 2 #scores of player1,player2,...
-_ST_IDY_PLAYER_QUEUE = _ST_IDY_SCORES + _MAX_PLAYERS
-_ST_IDY_ACT_DONE = _ST_IDY_PLAYER_QUEUE + _MAX_PLAYERS #was the card action taken for the current player
-_ST_IDY_CAB_DONE = _ST_IDY_ACT_DONE + 1 #were caballeros moved for the current player
+_ST_IDY_ACT_DONE = 3 #was the card action taken for the current player
+_ST_IDY_CAB_DONE = 4 #were caballeros moved for the current player
+_ST_IDY_CARDS = 5 #chosen card for each player
 
-_ST_IDY_END = max((_ST_IDY_SECRETSELS+_MAX_PLAYERS),(_ST_IDY_CAB_DONE+1),_NUM_POWER_CARDS,_MAX_DECK_COUNT) #current max should be 16
+_ST_IDY_SCORES = 0 #scores of player1,player2,...
+_ST_IDY_PLAYER_QUEUE = _ST_IDY_SCORES + _MAX_PLAYERS
+
+_ST_IDY_END = max((_ST_IDY_SECRETSELS+_MAX_PLAYERS),(_ST_IDY_CARDS+_MAX_PLAYERS),(_ST_IDY_PLAYER_QUEUE+_MAX_PLAYERS),_NUM_POWER_CARDS,_MAX_DECK_COUNT) #current max should be 18
 
 _ST_IDCH = 5 #highest number in the matrix should be 32, so want 5 channels
 
@@ -83,7 +87,7 @@ class ElGrandeGameState(object):
         self._winner = False
         self._state_matrix = np.full((_ST_IDX_END,_ST_IDY_END),0)
         self._cards = [] #cards will be loaded at state initialisation
-        self._decks = {1:[],2:[],3:[],4:[],5:[]} #same cards, organised by deck
+        self._decks = {"Deck1":[],"Deck2":[],"Deck3":[],"Deck4":[],"Deck5":[]} #same cards, organised by deck
         self._regions = []
         self._players = []
         self._end_turn = _MAX_TURNS #default end turn is 9
@@ -98,8 +102,8 @@ class ElGrandeGameState(object):
     def _get_pid(self,playerName):
         return self._players.index(playerName)
 
-    def _get_cid(self,cardName):
-        return self._cards.index(cardName)
+    def _get_cid(self,deckName,cardName):
+        return self._decks[deckName].index(cardName)
 
     def _get_phaseid(self,phaseName):
         return _PHASE_NAMES.index(phaseName)
@@ -108,20 +112,21 @@ class ElGrandeGameState(object):
         self._regions = jsonData["Regions"]
         self._players = jsonData["Players"]
         self._num_players = len(self._players)
-        self._cards = jsonData["Cards"]
+        self._decks = jsonData["Cards"]
+        #also list card guids, so we have an index
+        for deck in self._decks:
+            guids=deck.keys()
+            self._cards = self._cards+guids
         assert(len(self._cards)==_NUM_ACTION_CARDS)
-        #cards all named 'Deckn.cardname' - separate into decks for easier processing later
-        for key in self._cards.keys():
-            cardname = self._cards[key]["name"]
-            decknumber = int(cardname[4])
-            self._decks[decknumber].append(key)
+        #mobile scoreboard data, indexed by guid, containing points
+        self._scoreboards = jsonData['scoreboards']
             
     #turn all relevant state info from DB format into game format
     def _load_game_state(self,jsonData):
         self._state_matrix_add_king(jsonData['king'])
         self._state_matrix_add_cabs_grandes(jsonData['pieces'])
+        self._state_matrix_add_deck_info(jsonData['cards'],jsonData['pastcards'])
         self._state_matrix_add_turn_info(jsonData['turninfo'])
-        #TODO - action cards done, available, currently with player
         
     def _state_matrix_add_king(self,region_name):
         region_id = self._get_rid(region_name)
@@ -141,6 +146,21 @@ class ElGrandeGameState(object):
                     assert(region_id < _ST_IDX_POWERS)
                     self._state_matrix[(_ST_IDX_REGIONS+region_id),_ST_IDY_CABS + player_id]=data[player_name][key]
 
+    def _state_matrix_add_deck_info(cards,pastcards):
+        #action cards, sorted by deck
+        for deck in cards.keys():
+            card_id = self._get_cid(deck,self._decks[deck])
+            #decks all labelled 'Deckn'
+            deck_id = deck[4]-1
+            if deck_id <= _NUM_FULL_DECKS:
+                self._state_matrix[(_ST_IDX_DECKS+deck_id),(card_id)]=1
+        for deck in pastcards.keys():
+            deck_id = deck[4]-1
+            assert(deck_id<_NUM_FULL_DECKS)
+            for card in deck:
+                card_id = self._get_cid(deck,card)
+                self._state_matrix[(_ST_IDX_DECKPASTS+deck_id),(card_id)]=1
+            
     def _state_matrix_add_turn_info(self,data):
         #power cards
         for player_name in data['powercards'].keys()
@@ -158,20 +178,66 @@ class ElGrandeGameState(object):
         self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ROUND]=data['round']
         #phase
         self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_PHASE]=self._get_phaseid(data['phase'])
-        #score for each player
-        for player_name in data['scores'].keys()
-            player_id = self._get_pid(player_name)
-            score = data['scores'][player_name]
-            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_SCORES+player_id]=score
-        #queue
-        player_queue = data['playersleft'][1:] #skip the first element, since that's the current player
-        for k in range(len(player_queue)):
-            self._state_matrix[_ST_IDX_GAMECONTROL,(_ST_IDY_PLAYER_QUEUE+k)]=self._get_pid(player_queue[k])
         #action and/or cabs for current player
         if len(data['playersleft'])>0:
             self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACT_DONE]=int(data['actionsdone'][data['playersleft'][0]])
             self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CAB_DONE]=int(data['cabsdone'][data['playersleft'][0]])
-                  
+        #this turn's cards played by players
+        for player_name in data['actioncards'].keys()
+            player_id = self._get_pid(player_name)
+            card=data['actioncards'][player_name]
+            #here, card ID is in single index format (up to 43) - not per-deck
+            card_id = self._cards.keys().index[card]
+            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS+player_id]=card_id
+        #score for each player (in 2nd gamecontrol column)
+        for player_name in data['scores'].keys()
+            player_id = self._get_pid(player_name)
+            score = data['scores'][player_name]
+            self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_SCORES+player_id]=score
+        #queue  (in 2nd gamecontrol column)
+        player_queue = data['playersleft'][1:] #skip the first element, since that's the current player
+        for k in range(len(player_queue)):
+            self._state_matrix[_ST_IDX_GAMECONTROL2,(_ST_IDY_PLAYER_QUEUE+k)]=self._get_pid(player_queue[k])
+                 
+    #functions for doing actions
+    
+    def _deal_all_decks(self):
+        cards=[]
+        for deck_id in range(4):
+            #put current card in with the past ones and blank out current val
+            self._state_matrix[(_ST_IDX_DECKPASTS+deck_id),:] = self._state_matrix[(_ST_IDX_DECKPASTS+deck_id),:] + self._state_matrix[(_ST_IDX_DECKS+deck_id),:]
+            self._state_matrix[(_ST_IDX_DECKS+deck_id),:]=np.zeros(_ST_IDY_END)
+            deck_end = self._decks["Deck"+str(deck_id+1)]
+            card_ids = [k for k in range(deck_end) if self._state_matrix[(_ST_IDX_DECKPASTS+deck_id),k]==0]
+            next_card_id = random.choice(card_ids)
+            self._state_matrix[(_ST_IDX_DECKS+deck_id),next_card_id]=1
+            
+    def _assign_card(self,card_id):
+        self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS+self._cur_player]=card_id
+        
+    def _assign_power(self,power_id):
+        self._state_matrix[_ST_IDX_POWERS,power_id]=1
+        
+    def _retrieve_power(self,power_id):
+        self._state_matrix[_ST_IDX_POWERPASTS,power_id]=0
+        
+    def _set_secret_region(self,region_id,player_id=self._cur_player):
+        #ensure only one set at a time
+        self._state_matrix[:_NUM_REGIONS,_ST_IDY_SECRETSELS+player_id]=np.zeros(_NUM_REGIONS)
+        self._state_matrix[region_id,_ST_IDY_SECRETSELS+player_id]=1
+
+    def _move_grande(self,region_id):
+        self._state_matrix[:_NUM_REGIONS,_ST_IDY_GRANDES+self._cur_player]=np.zeros(_NUM_REGIONS)
+        self._state_matrix[region_id,_ST_IDY_GRANDES+self._cur_player]=1
+        
+    def _move_king(self,region_id):
+        self._state_matrix[:_NUM_REGIONS,_ST_IDY_KING]=np.zeros(_NUM_REGIONS)
+        self._state_matrix[region_id,_ST_IDY_KING]=1
+
+    def _move_one_cab(self,from_region, to_region, of_player):
+        assert(self._state_matrix[from_region,of_player]>0)
+        self._state_matrix[from_region,of_player] = self._state_matrix[from_region,of_player] - 1
+        self._state_matrix[to_region,of_player] = self._state_matrix[to_region,of_player] + 1
 
     def _score_one_region(self,region):
         assert(region>0 and region<=_NUM_EXT_REGIONS) 
@@ -288,7 +354,7 @@ class ElGrandeGameState(object):
         # _ACT_MOVE_KINGS (+ _NUM_REGIONS), _ACT_CAB_MOVES (+ _NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS)
 
         if action==_ACT_DEAL:
-            self._deal_all_decks
+            self._deal_all_decks()
         elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
             self._assign_card(action - _ACT_CARDS)
         elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWERS:
@@ -327,8 +393,35 @@ class ElGrandeGameState(object):
         """Action -> string. Args either (player, action) or (action)."""
         player = self.current_player() if arg1 is None else arg0
         action = arg0 if arg1 is None else arg1
+        actionString=""
         #TODO - code this
-        return "{} ({})".format(player,action)
+        if action==_ACT_DEAL:
+            actionString = "Deal"
+        elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
+            cardname = self._cards[action-_ACT_CARDS]['name']
+            actionString = "Action "+cardname
+        elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWERS:
+            actionString = "Power "+str(action + 1 - _ACT_POWERS)
+        elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + _NUM_POWERS:
+            actionString = "Retrieve Power "+str(action + 1 - _ACT_RETRIEVE_POWERS)
+        elif action == _ACT_DECIDE_CAB:
+            actionString = "Decide Caballeros First"
+        elif action == _ACT_DECIDE_ACT:
+            actionString = "Decide Action First"
+        elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + _NUM_REGIONS:
+            actionString = "Choose "+ self._regions[action - _ACT_CHOOSE_SECRETS]
+        elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + _NUM_REGIONS:
+            actionString = "Grande to "+ self._regions[action - _ACT_MOVE_GRANDES]
+        elif action >= _ACT_MOVE_KINGS and action < _ACT_MOVE_KINGS + _NUM_REGIONS:
+            actionString = "King to "+ self._regions[action - _ACT_MOVE_KINGS]
+        else:
+            #moving a caballero fromregion, toregion, ofplayer
+            fromRegion = (action- _ACT_CAB_MOVES)//(_NUM_CAB_AREAS * _MAX_PLAYERS)
+            toRegion = ((action- _ACT_CAB_MOVES)%(_NUM_CAB_AREAS * _MAX_PLAYERS))//_MAX_PLAYERS
+            ofPlayer = (action- _ACT_CAB_MOVES)%_MAX_PLAYERS
+            actionString = self._players[ofPlayer] + " caballero from " + self._regions[fromRegion] + " to " self._regions[toRegion]        
+        
+        return "{} ({})".format(player,actionString)
 
     def is_terminal(self):
         return self._is_terminal
@@ -390,7 +483,10 @@ class ElGrandeGameState(object):
         return [self.clone()]
 
     def __str__(self):
-        return self._board
+        #format for state matrix - board elements with slash-separated player cab numbers, Grande player IDs, King
+        #                        - power cards by player
+        #                        - action cards by deck, replacing name with playerID if played
+        return ""
 
     def clone(self):
         #TODO - if game is changed to inherit from pyspiel, this might need changing
