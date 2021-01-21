@@ -258,7 +258,8 @@ class ElGrandeGameState(object):
         assert(self._state_matrix[from_region,of_player]>0)
         self._state_matrix[from_region,of_player] = self._state_matrix[from_region,of_player] - 1
         self._state_matrix[to_region,of_player] = self._state_matrix[to_region,of_player] + 1
-        #TODO - add move info
+        #ensure that a matching pattern keeps track of what moves are now allowable
+        self._register_cab_moved(from_region,to_region,of_player)
         
     def _region_str(self,region_id):
         all_region_names = self._regions + ["Castillo","court","province"]
@@ -421,10 +422,7 @@ class ElGrandeGameState(object):
         if card_details['from']['condition'] != None
             self._movement_tracking['fromcondition']=int(card_details['from']['condition'])
         end
-        self._movement_tracking['patterns']=[pattern]
-    
-
-    
+        self._movement_tracking['patterns']=[pattern]   
 
         #anything that can simply be done, just do it
         fromreg=self._movement_tracking['from']
@@ -470,7 +468,44 @@ class ElGrandeGameState(object):
 
     def _set_valid_cab_movements():
         #use movement tracking info to determine which from/to moves are okay
-        
+        mask=[0]*_ACT_END
+        for fromreg in self._movement_tracking['from']:
+            for toreg in self._movement_tracking['to']:
+                players=[]
+                for pattern in self._movement_tracking['patterns']:
+                    #add players from this pattern if it's not filled
+                    if pattern.get('cabs',0)<pattern['max']:
+                        mentioned_player = pattern.get('player',-1)
+                        if mentioned_player == -1:
+                            #any player is okay
+                            players = range(self._num_players)
+                        else:
+                            #a player is mentioned - see if it's include or exclude
+                            if pattern['allowed']:
+                                players = [i for i in range(self._num_players) if ((i in players) or i==mentioned_player)]
+                            else:
+                                players = [i for i in range(self._num_players) if ((i in players) or i!=mentioned_player)]
+                for player in players:
+                    if self._state_matrix[fromreg,player] >0:
+                        #there is a caballero here of the correct colour, so this move action is okay
+                        mask[player + _NUM_CAB_AREAS*(toreg + _NUM_CAB_AREAS*fromreg)]=1
+        return mask 
+
+    def _register_cab_moved(self,fromreg,toreg,ofplayer):
+        for pattern in self._movement_tracking['patterns']:
+            if self._matched_pattern(ofplayer,pattern):
+                pattern['cabs']=pattern.get('cabs',0)+1
+                return
+            
+    def _matched_pattern(self,player,pattern):
+        if pattern.get('player',-1) == -1:
+            return True #found an unrestricted pattern
+        if pattern['player']==player and pattern['allowed']:
+            return True #found a pattern that says cabs of this colour are allowed
+        if pattern['player']!=player and not pattern['allowed']:
+            return True #found a pattern that says cabs not of this colour are allowed
+        #didn't find a match
+        return False
         
         
     def _set_valid_actions_from_card(self):
@@ -506,9 +541,11 @@ class ElGrandeGameState(object):
                 mask[_ACT_CHOOSE_SECRETS+i]=1
             return mask
 
-    def _set_valid_actions_for_cabs(self):
-        
-        
+    def _after_power_choice():
+        #functions to determine if we should move to the next phase and/or the next player, and who that player might be
+
+    def _after_action_step():    
+        #functions to determine if we should move to the next phase and/or the next player, and who that player might be
         
     # OpenSpiel (PySpiel) API functions are below. These need to be provided by
     # every game. Some not-often-used methods have been omitted.
@@ -546,7 +583,6 @@ class ElGrandeGameState(object):
         elif self.is_terminal():
             return []
         else:
-            #TODO: code to generate the actual legal actions
             mask=[0]*_ACT_END
             if self._phase_name()=='start':
                 mask[_ACT_DEAL]=1
@@ -565,7 +601,7 @@ class ElGrandeGameState(object):
             elif self._phase_name()=='actioncard':
                 mask = self._set_valid_actions_from_card()
             elif self._phase_name()=='actioncab':
-                mask = self._set_valid_actions_for_cabs()
+                mask = self._set_valid_cab_movements()
             else:
                 #must be score - choose a secret region
                 for i in range(_NUM_REGIONS):
@@ -586,8 +622,10 @@ class ElGrandeGameState(object):
             self._assign_card(action - _ACT_CARDS)
         elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWERS:
             self._assign_power(action - _ACT_POWERS)
+            self._after_power_choice() #find next player to pick power card, or move on one phase
         elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + _NUM_POWERS:
             self._retrieve_power(action - _ACT_RETRIEVE_POWERS)
+            self._after_action_step() #check if we need to move to next player, or next step, or keep playing actions
         elif action == _ACT_DECIDE_CAB:
             self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_PHASE]=self._get_phaseid(data['actioncab'])
             self._pack_court()
@@ -598,16 +636,20 @@ class ElGrandeGameState(object):
             self._setup_action()
         elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + _NUM_REGIONS:
             self._set_secret_region(action - _ACT_CHOOSE_SECRETS)
+            self._after_action_step() 
         elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + _NUM_REGIONS:
             self._move_grande(action - _ACT_MOVE_GRANDES)
+            self._after_action_step() 
         elif action >= _ACT_MOVE_KINGS and action < _ACT_MOVE_KINGS + _NUM_REGIONS:
             self._move_king(action - _ACT_MOVE_KINGS)
+            self._after_action_step() 
         else:
             #moving a caballero fromregion, toregion, ofplayer
             fromRegion = (action- _ACT_CAB_MOVES)//(_NUM_CAB_AREAS * _MAX_PLAYERS)
             toRegion = ((action- _ACT_CAB_MOVES)%(_NUM_CAB_AREAS * _MAX_PLAYERS))//_MAX_PLAYERS
             ofPlayer = (action- _ACT_CAB_MOVES)%_MAX_PLAYERS
             self._move_one_cab(fromRegion, toRegion, ofPlayer)        
+            self._after_action_step() 
     
         if self._is_game_end():
             final_scores = self._score_all_regions()
@@ -625,7 +667,6 @@ class ElGrandeGameState(object):
         player = self.current_player() if arg1 is None else arg0
         action = arg0 if arg1 is None else arg1
         actionString=""
-        #TODO - code this
         if action==_ACT_DEAL:
             actionString = "Deal"
         elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
