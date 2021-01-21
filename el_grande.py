@@ -17,6 +17,7 @@ _NUM_PLAYABLE_DECKS = 5 #include also the single-card 'Deck5'
 _MAX_DECK_COUNT = 11 #greatest number of cards in any single deck
 _NUM_ACTION_CARDS = 43 #total number of action cards in all decks
 _NUM_POWER_CARDS = 13
+_POWER_CABS = [6,5,5,4,4,3,3,2,2,1,1,0,0]
 #game phases start,power,action,actionchoice,actioncard,actioncabs,score
 _NUM_PHASES = 7
 _PHASE_NAMES = ['start','power','action','actionchoose','actioncard','actioncab','score']
@@ -50,7 +51,9 @@ _ST_IDY_ROUND = 0 #start of gamecontrol1 column - roundcount
 _ST_IDY_PHASE = 1
 _ST_IDY_ACT_DONE = 3 #was the card action taken for the current player
 _ST_IDY_CAB_DONE = 4 #were caballeros moved for the current player
-_ST_IDY_CARDS = 5 #chosen card for each player
+_ST_IDY_ACT_DOING = 5 #are we currently in the process of doing an action card?
+_ST_IDY_CABS_TO_PUT = 6 #how many caballeros can we put on the board?
+_ST_IDY_CARDS = 7 #chosen card for each player
 
 _ST_IDY_SCORES = 0 #scores of player1,player2,...
 _ST_IDY_PLAYER_QUEUE = _ST_IDY_SCORES + _MAX_PLAYERS
@@ -67,7 +70,8 @@ _ACT_POWERS = _ACT_CARDS + _NUM_ACTION_CARDS #select power cards
 _ACT_RETRIEVE_POWERS = _ACT_POWERS + _NUM_POWERS #get back an old power card
 _ACT_DECIDE_CAB = _ACT_RETRIEVE_POWERS + _NUM_POWERS #decide to place cabs first
 _ACT_DECIDE_ACT = _ACT_DECIDE_CAB + 1 #decide to play the action card first
-_ACT_CHOOSE_SECRETS = _ACT_DECIDE_ACT+1 #choose one secret region
+_ACT_DECIDE_ACT_ALT = _ACT_DECIDE_ACT + 1 #special for the 'OR' card - decide on the second action
+_ACT_CHOOSE_SECRETS = _ACT_DECIDE_ACT_ALT + 1 #choose one secret region
 _ACT_MOVE_GRANDES = _ACT_CHOOSE_SECRETS + _NUM_REGIONS
 _ACT_MOVE_KINGS = _ACT_MOVE_GRANDES + _NUM_REGIONS
 _ACT_CAB_MOVES = _ACT_MOVE_KINGS + _NUM_REGIONS
@@ -86,11 +90,12 @@ class ElGrandeGameState(object):
         self._win_points = np.full(players, 0)
         self._winner = False
         self._state_matrix = np.full((_ST_IDX_END,_ST_IDY_END),0)
-        self._cards = [] #cards will be loaded at state initialisation
+        self._cards = {} #cards will be loaded at state initialisation
         self._decks = {"Deck1":[],"Deck2":[],"Deck3":[],"Deck4":[],"Deck5":[]} #same cards, organised by deck
         self._regions = []
         self._players = []
         self._end_turn = _MAX_TURNS #default end turn is 9
+        self._init_move_info()
         
     # Helper functions (not part of the OpenSpiel API).
     
@@ -107,17 +112,22 @@ class ElGrandeGameState(object):
 
     def _get_phaseid(self,phaseName):
         return _PHASE_NAMES.index(phaseName)
+    
+    def _get_current_card(self):
+        return self._cards[self._state_matrix[self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS+self._cur_player]-1]]
+
 
     def _load_game_info(self,jsonData):
         self._regions = jsonData["Regions"]
+        self._neighbors = self._init_neighbors()
         self._players = jsonData["Players"]
         self._num_players = len(self._players)
         self._decks = jsonData["Cards"]
-        #also list card guids, so we have an index
+        #also list cards in one dictionary, so we have an index
         for deck in self._decks:
-            guids=deck.keys()
-            self._cards = self._cards+guids
-        assert(len(self._cards)==_NUM_ACTION_CARDS)
+            for cardguid in deck.keys():
+                self._cards[cardguid]=deck[cardguid]
+        assert(len(self._cards.keys())==_NUM_ACTION_CARDS)
         #mobile scoreboard data, indexed by guid, containing points
         self._scoreboards = jsonData['scoreboards']
             
@@ -186,9 +196,9 @@ class ElGrandeGameState(object):
         for player_name in data['actioncards'].keys()
             player_id = self._get_pid(player_name)
             card=data['actioncards'][player_name]
-            #here, card ID is in single index format (up to 43) - not per-deck
+            #here, card ID is in single index format (up to 43) - not per-deck. Add 1 so we can use 0==not-played
             card_id = self._cards.keys().index[card]
-            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS+player_id]=card_id
+            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS+player_id]=card_id+1
         #score for each player (in 2nd gamecontrol column)
         for player_name in data['scores'].keys()
             player_id = self._get_pid(player_name)
@@ -198,6 +208,13 @@ class ElGrandeGameState(object):
         player_queue = data['playersleft'][1:] #skip the first element, since that's the current player
         for k in range(len(player_queue)):
             self._state_matrix[_ST_IDX_GAMECONTROL2,(_ST_IDY_PLAYER_QUEUE+k)]=self._get_pid(player_queue[k])
+            
+    def _init_neighbors(self):
+        neighbors = np.full(_NUM_REGIONS,None)
+        for region in self._regions.keys():
+            region_id = _get_rid(region)
+            neighbors[region_id]=[self._get_rid(r) for r in self._regions[region]['neighbors']]
+        self._neighbors = neighbors
                  
     #functions for doing actions
     
@@ -243,15 +260,28 @@ class ElGrandeGameState(object):
     def _region_str(self,region_id):
         all_region_names = self._regions + ["Castillo","court","province"]
         retstr = all_region_names[region_id] + " :" + "|".join([str(i) for i in self._state_matrix[region_id,_ST_IDY_CABS:(_ST_IDY_CABS + self._num_players)]])
+        grandes = [str(i) for i in range(self._max_players) if self._state_matrix[region_id,_ST_IDY_GRANDES:(_ST_IDY_GRANDES + self._max_players)][i]==1]
+        if len(grandes)>0:
+            retstr = retstr + " G(" + "|".join(grandes) + ")"
+        if self._state_matrix[region_id,_ST_IDY_KING]==1]:
+            retstr = retstr + " K"
         return retstr
     
     def _power_str(self,player_id):
         current = str(self._state_matrix[_ST_IDX_POWERS+player_id].index(1))
         past = [str(i) for i in self._state_matrix[_ST_IDX_POWERS+player_id,:_NUM_POWER_CARDS]]
         return str(player_id) + ": " + current + " (" + ",".join(past) + ")"
-                
-    def _action_str(self):
 
+    def _action_str(self):
+        #first four decks + king card
+        cards = [self._decks["Deck"+str(deck_id + 1)][self._state_matrix[_ST_IDX_DECK+deck_id,:].index(1)] for deck_id in range(_NUM_FULL_DECKS)] + self._decks["Deck5"]
+        played_cards_ids = self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS:(_ST_IDY_CARDS + self._num_players)]
+        played_cards = {self._cards[played_cards_ids[i]-1]:i for i in range(self._num_players) if played_cards_ids[i]>0}
+        for key in played_cards.keys():
+            i=cards.index(key)
+            cards[i] = "(" + str(played_cards[key]) + ")"
+        return "|".join(cards)
+                        
     def _score_one_region(self,region):
         assert(region>0 and region<=_NUM_EXT_REGIONS) 
         cab_counts = self._state_matrix[_ST_IDX_REGIONS+region,_ST_IDY_CABS : (_ST_IDY_CABS+self._num_players) ]
@@ -296,7 +326,51 @@ class ElGrandeGameState(object):
             final_scores = final_scores+self._score_one_region(r+1)
         return final_scores
     
-  
+    def _pack_court(self):
+        #move the correct number of caballeros from province to court, at the point where player action commences
+        power = self._state_matrix[_ST_IDX_POWERS,:_NUM_POWER_CARDS ].index(1)
+        n_cabs = _POWER_CABS[power]
+        self._state_matrix[_ST_IDX_PROVINCE,self._cur_player] = self._state_matrix[_ST_IDX_PROVINCE,self._cur_player] - n_cabs
+        self._state_matrix[_ST_IDX_COURT,self._cur_player] = self._state_matrix[_ST_IDX_COURT,self._cur_player] + n_cabs
+                           
+        
+    def _setup_caballero_placement(self):
+        #set correct state information for where we will be allowed to place caballeros
+        self._movement_tracking['from']=[_ST_IDX_COURT]
+        self._movement_tracking['lockfrom']=False
+        region_king = self._state_matrix[:_NUM_REGIONS,_ST_IDY_KING].index(1)
+        self._movement_tracking['to']=self._neighbors[region_king]+[_ST_IDX_CASTILLO]
+        self._movement_tracking['lockto']=False
+        self._moving = True
+        card = self._get_current_card()
+        n_cabs = min(int(card["name"][4]),self._state_matrix[_ST_IDX_PROVINCE,self._cur_player])
+        pattern = {'player':self._cur_player,'allowed':True,'max':n_cabs,'min':0}
+        self._movement_tracking['patterns']=[pattern]
+    
+    def _init_move_info(self):
+        self._movement_tracking = {'from':[],'to':[],'cabs':[],'patterns':[],'queue':[],'player':0,'lockfrom':False,'lockto':False,'moving':False}
+        
+    def _setup_action(self,alt_action=-1):
+        #do an instant action, or set up info to enable multi-step actions
+        
+        self._init_move_info() #wipe out previous info on where caballeros were/were not allowed to move
+        card = self._get_current_card()
+        action_type = card['actiontype']
+        card_details = card['details']
+        if alt_action>=0:
+            action_type = card_details[alt_action]['type']
+            card_details = card_details[alt_action]['details']
+            
+        if action_type == 'all':
+            #only one card is an 'and' and it happens to have two move elements
+            self._do_caballero_move_info(card_details[0],True)
+            self._add_caballero_move_info(card_details[1])
+        elif action_type == 'move':
+            self._do_caballero_move_info(card_details[1])
+        elif action_type == 'score':
+            self._do_special_score(card_details)
+            
+        
     # OpenSpiel (PySpiel) API functions are below. These need to be provided by
     # every game. Some not-often-used methods have been omitted.
 
@@ -361,7 +435,6 @@ class ElGrandeGameState(object):
     def apply_action(self, action):
         """Applies the specified action to the state"""
 
-        #TODO - state changes due to specific action
         #possible actions: _ACT_DEAL, _ACT_CARDS (+ _NUM_ACTION_CARDS), _ACT_POWERS (+ _NUM_POWERS), _ACT_RETRIEVE_POWERS (+ _NUM_POWERS), 
         # _ACT_DECIDE_CAB, _ACT_DECIDE_ACT = _ACT_DECIDE_CAB + 1, _ACT_CHOOSE_SECRETS (+ _NUM_REGIONS), _ACT_MOVE_GRANDES (+ _NUM_REGIONS), 
         # _ACT_MOVE_KINGS (+ _NUM_REGIONS), _ACT_CAB_MOVES (+ _NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS)
@@ -376,8 +449,12 @@ class ElGrandeGameState(object):
             self._retrieve_power(action - _ACT_RETRIEVE_POWERS)
         elif action == _ACT_DECIDE_CAB:
             self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_PHASE]=self._get_phaseid(data['actioncab'])
+            self._pack_court()
+            self._setup_caballero_placement()
         elif action == _ACT_DECIDE_ACT:
             self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_PHASE]=self._get_phaseid(data['actioncard'])
+            self._pack_court()
+            self._setup_action()
         elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + _NUM_REGIONS:
             self._set_secret_region(action - _ACT_CHOOSE_SECRETS)
         elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + _NUM_REGIONS:
