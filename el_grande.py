@@ -23,7 +23,7 @@ _NUM_PHASES = 7
 _PHASE_NAMES = ['start','power','action','actionchoose','actioncard','actioncab','score']
 _ACTION_TYPES = ['none','move','score','power','grande','scoreboard','king','uniquescore']
 _MAX_TURNS = 9 #full game has 9 turns, but we can specify fewer if need be
-
+_NUM_SCOREBOARDS = 2
 
 _DEFAULT_PLAYERS = 4
 
@@ -76,7 +76,8 @@ _ACT_DECIDE_ACT_ALT = _ACT_DECIDE_ACT + 1 #special for the 'OR' card - decide on
 _ACT_CHOOSE_SECRETS = _ACT_DECIDE_ACT_ALT + 1 #choose one secret region
 _ACT_MOVE_GRANDES = _ACT_CHOOSE_SECRETS + _NUM_REGIONS
 _ACT_MOVE_KINGS = _ACT_MOVE_GRANDES + _NUM_REGIONS
-_ACT_CAB_MOVES = _ACT_MOVE_KINGS + _NUM_REGIONS
+_ACT_MOVE_SCOREBOARDS = _ACT_MOVE_GRANDES + _NUM_REGIONS
+_ACT_CAB_MOVES = _ACT_MOVE_SCOREBOARDS + (_NUM_SCOREBOARDS*_NUM_REGIONS)
 _ACT_END = _ACT_CAB_MOVES + (_NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS) #combos of moving a cab from region, to region, of player
 
 class ElGrandeGameState(object):
@@ -425,7 +426,7 @@ class ElGrandeGameState(object):
 
     
 
-        #ones that can simply be done, just do them
+        #anything that can simply be done, just do it
         fromreg=self._movement_tracking['from']
         toreg = self._movement_tracking['to']
         #assume that 'court' or 'province' only appears by itself
@@ -442,20 +443,11 @@ class ElGrandeGameState(object):
                     self._state_matrix[fromreg[0],_ST_IDY_CABS+self._cur_player] -= sendCount
                     self._state_matrix[toreg[0],_ST_IDY_CABS+self._cur_player] += sendCount
 
-        --null-out movement info, since we've done the move
-        resetMoveInfo()
-        return
-    end
-
-    --bail out before the setup if we need to give people time to choose a region
-    if g_cabMovementInfo['from'][1]=='ownerchoose' or g_cabMovementInfo['to'][1]=='ownerchoose' then return end
-
-    pdebug("cab movement info is "..JSON.encode(g_cabMovementInfo),2)
-    pdebug("detail info is "..JSON.encode(details),2)
-    --set the board correctly to show what's movable, and where
-    if not pause then
-        setupCaballeroMovement()
-    end
+            #null-out movement info, since we've done the move
+            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACTIONTYPE]=0
+            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACT_DONE]=1
+            self._init_move_info()
+    
         
     def _add_caballero_move_info(self,card_details):         
         pattern = {}
@@ -476,7 +468,48 @@ class ElGrandeGameState(object):
             pattern['min']=pattern['max']        
         self._movement_tracking['patterns'] = self._movement_tracking.get('patterns',[]) + [pattern]
 
-       
+    def _set_valid_cab_movements():
+        #use movement tracking info to determine which from/to moves are okay
+        
+        
+        
+    def _set_valid_actions_from_card(self):
+        #determine what sort of action is being done, then figure out the mask
+        #_ACTION_TYPES = ['none','move','score','power','grande','scoreboard','king','uniquescore']
+        
+        mask=[0]*_ACT_END
+        if self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACTIONTYPE]=='move':
+            return self._set_valid_cab_movements()
+        elif self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACTIONTYPE]=='score':
+            #if a 'score' action ends up here, we need to do region choice
+            for i in range(_NUM_REGIONS):
+                mask[_ACT_CHOOSE_SECRETS+i]=1
+            return mask
+        elif self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACTIONTYPE]=='power':
+            for i in range(_NUM_POWER_CARDS):
+                mask[_ACT_RETRIEVE_POWERS+i]=1
+            return mask
+        elif self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACTIONTYPE]=='grande':
+            for i in range(_NUM_REGIONS):
+                mask[_ACT_MOVE_GRANDES+i]=1
+            return mask
+        elif self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACTIONTYPE]=='scoreboard':
+            for i in range(_NUM_REGIONS*_NUM_SCOREBOARDS):
+                mask[_ACT_MOVE_SCOREBOARDS+i]=1
+            return mask
+        elif self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACTIONTYPE]=='king':
+            for i in range(_NUM_REGIONS):
+                mask[_ACT_MOVE_KING+i]=1
+            return mask
+        elif self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACTIONTYPE]=='uniquescore':
+            for i in range(_NUM_REGIONS):
+                mask[_ACT_CHOOSE_SECRETS+i]=1
+            return mask
+
+    def _set_valid_actions_for_cabs(self):
+        
+        
+        
     # OpenSpiel (PySpiel) API functions are below. These need to be provided by
     # every game. Some not-often-used methods have been omitted.
 
@@ -530,7 +563,9 @@ class ElGrandeGameState(object):
                 mask[_ACT_DECIDE_CAB]=1
                 mask[_ACT_DECIDE_ACT]=1
             elif self._phase_name()=='actioncard':
+                mask = self._set_valid_actions_from_card()
             elif self._phase_name()=='actioncab':
+                mask = self._set_valid_actions_for_cabs()
             else:
                 #must be score - choose a secret region
                 for i in range(_NUM_REGIONS):
