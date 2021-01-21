@@ -21,6 +21,7 @@ _POWER_CABS = [6,5,5,4,4,3,3,2,2,1,1,0,0]
 #game phases start,power,action,actionchoice,actioncard,actioncabs,score
 _NUM_PHASES = 7
 _PHASE_NAMES = ['start','power','action','actionchoose','actioncard','actioncab','score']
+_ACTION_TYPES = ['none','move','score','power','grande','scoreboard','king','uniquescore']
 _MAX_TURNS = 9 #full game has 9 turns, but we can specify fewer if need be
 
 
@@ -31,7 +32,7 @@ _DEFAULT_PLAYERS = 4
 #Store state as a matrix of ints, so as to make it easier to convert to a tensor later
 
 _ST_IDX_REGIONS = 0 #start of regions
-_ST_IDX_CASTILLO = _ST_IDX_REGIONS + 1
+_ST_IDX_CASTILLO = _ST_IDX_REGIONS + _NUM_REGIONS
 _ST_IDX_COURT = _ST_IDX_CASTILLO + 1
 _ST_IDX_PROVINCE = _ST_IDX_COURT + 1
 _ST_IDX_POWERS = _ST_IDX_PROVINCE + 1 #start of current power cards
@@ -51,12 +52,13 @@ _ST_IDY_ROUND = 0 #start of gamecontrol1 column - roundcount
 _ST_IDY_PHASE = 1
 _ST_IDY_ACT_DONE = 3 #was the card action taken for the current player
 _ST_IDY_CAB_DONE = 4 #were caballeros moved for the current player
-_ST_IDY_ACT_DOING = 5 #are we currently in the process of doing an action card?
-_ST_IDY_CABS_TO_PUT = 6 #how many caballeros can we put on the board?
+_ST_IDY_CABS_TO_PUT = 5 #how many caballeros can we put on the board?
+_ST_IDY_ACTIONTYPE = 6 #which of the possible types of card actions are being done?
 _ST_IDY_CARDS = 7 #chosen card for each player
 
 _ST_IDY_SCORES = 0 #scores of player1,player2,...
 _ST_IDY_PLAYER_QUEUE = _ST_IDY_SCORES + _MAX_PLAYERS
+
 
 _ST_IDY_END = max((_ST_IDY_SECRETSELS+_MAX_PLAYERS),(_ST_IDY_CARDS+_MAX_PLAYERS),(_ST_IDY_PLAYER_QUEUE+_MAX_PLAYERS),_NUM_POWER_CARDS,_MAX_DECK_COUNT) #current max should be 18
 
@@ -360,17 +362,121 @@ class ElGrandeGameState(object):
         if alt_action>=0:
             action_type = card_details[alt_action]['type']
             card_details = card_details[alt_action]['details']
-            
+        
+        self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACTIONTYPE]=_ACTION_TYPES[action_type]
+        
+        #additional setup for cab movement action types
         if action_type == 'all':
             #only one card is an 'and' and it happens to have two move elements
-            self._do_caballero_move_info(card_details[0],True)
+            self._do_caballero_move_info(card_details[0])
             self._add_caballero_move_info(card_details[1])
+            multi_step=True
         elif action_type == 'move':
             self._do_caballero_move_info(card_details[1])
-        elif action_type == 'score':
-            self._do_special_score(card_details)
-            
+
+    def _do_caballero_move_info(self,card_details):  
+        #make movable caballeros interactable
+        #'from' values are court, or region of your choice
+        #self._movement_tracking = {['from']={},['to']={},['patterns']={},
+        #                     ['player']=nil,['lockfrom']=false,['lockto']=false,['moving']=false}
+
+        self._movement_tracking['player']=self._cur_player
+        for v in ['from','to']:
+            if card_details[v]['region'] in ['court','province']:
+                self._movement_tracking[v]=[card_details[v]['region']]
+            elif card_details[v]['region']=='selfchoose':
+                #current King's region shouldn't be in the list
+                the_regions=[i for i in range(_NUM_REGIONS) if self._state_matrix[i,_ST_IDY_KING]==0]
+                if v=='to':
+                    the_regions = the_regions + [_ST_IDX_CASTILLO]
+                self._movement_tracking[v]=the_regions
+            else:
+                #placeholder for some sort of owner choice
+                self._movement_tracking[v]=[details[v]['region']]
+
+            if card_details[v]['splitopt']=="all":
+                self._movement_tracking['lock'+v]=True 
+            else:
+                self._movement_tracking['lock'+v]=False 
+
+        #set the pattern for cabs to move
+        pattern={}
+        if card_details['player']=='foreign':
+            pattern['player']=self._cur_player
+            pattern['allowed']=False
+        if card_details['player']=='self':
+            pattern['player']=self._cur_player 
+            pattern['allowed']=True
+        if card_details['number']<0:
+            pattern['max']=150
+        else:
+            pattern['max']=card_details['number']
+        if card_details['numopt']=='lteq':
+            pattern['min']=0 
+        else:
+            pattern['min']=pattern['max']
         
+        #there may be a condition on choice of 'from' region - check it
+        if card_details['from']['condition'] != None
+            self._movement_tracking['fromcondition']=int(card_details['from']['condition'])
+        end
+        self._movement_tracking['patterns']=[pattern]
+    
+
+    
+
+        #ones that can simply be done, just do them
+        fromreg=self._movement_tracking['from']
+        toreg = self._movement_tracking['to']
+        #assume that 'court' or 'province' only appears by itself
+        if (fromreg[0] in [_ST_IDX_COURT,_ST_IDX_PROVINCE]) and (toreg[0] in [_ST_IDX_COURT,_ST_IDX_PROVINCE]):
+            assert(len(fromreg)==1 and len(toreg)==1)
+            sendCount=card_details['number']
+            if sendCount<0:
+                sendCount= self._state_matrix[fromreg[0],_ST_IDY_CABS+self._cur_player] #figure out how much the 'all' in 'send all' is
+            for pl in range(self._num_players):
+                sendThis=True
+                if (card_details['player']=='foreign' and pl==self._cur_player) or  (details['player']=='self' and pl!=self._cur_player):
+                    sendThis=False
+                if sendThis:
+                    self._state_matrix[fromreg[0],_ST_IDY_CABS+self._cur_player] -= sendCount
+                    self._state_matrix[toreg[0],_ST_IDY_CABS+self._cur_player] += sendCount
+
+        --null-out movement info, since we've done the move
+        resetMoveInfo()
+        return
+    end
+
+    --bail out before the setup if we need to give people time to choose a region
+    if g_cabMovementInfo['from'][1]=='ownerchoose' or g_cabMovementInfo['to'][1]=='ownerchoose' then return end
+
+    pdebug("cab movement info is "..JSON.encode(g_cabMovementInfo),2)
+    pdebug("detail info is "..JSON.encode(details),2)
+    --set the board correctly to show what's movable, and where
+    if not pause then
+        setupCaballeroMovement()
+    end
+        
+    def _add_caballero_move_info(self,card_details):         
+        pattern = {}
+        if card_details['player']=='foreign':
+            pattern['player']=self._cur_player
+            pattern['allowed']=False
+        elif card_details['player']=='self':
+            pattern['player']=self._cur_player
+            pattern['allowed']=True
+            
+        if card_details['number']<0:
+            pattern['max']=150 
+        else:
+            pattern['max']=details['number']
+        if details['numopt']=='lteq':
+            pattern['min']=0 
+        else:
+            pattern['min']=pattern['max']        
+        self._movement_tracking['patterns'] = self._movement_tracking.get('patterns',[]) + [pattern]
+
+       
     # OpenSpiel (PySpiel) API functions are below. These need to be provided by
     # every game. Some not-often-used methods have been omitted.
 
