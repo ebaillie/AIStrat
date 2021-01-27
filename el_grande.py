@@ -23,6 +23,7 @@ _NUM_PHASES = 7
 _PHASE_NAMES = ['start','power','action','actionchoose','actioncard','actioncab','score']
 _ACTION_TYPES = ['none','move','score','power','grande','scoreboard','king','uniquescore']
 _MAX_TURNS = 9 #full game has 9 turns, but we can specify fewer if need be
+_SCORING_ROUND = [False,False,False,True,False,False,True,False,False,True]
 _NUM_SCOREBOARDS = 2
 
 _DEFAULT_PLAYERS = 4
@@ -57,10 +58,11 @@ _ST_IDY_ACTIONTYPE = 6 #which of the possible types of card actions are being do
 _ST_IDY_CARDS = 7 #chosen card for each player
 
 _ST_IDY_SCORES = 0 #scores of player1,player2,...
-_ST_IDY_PLAYER_QUEUE = _ST_IDY_SCORES + _MAX_PLAYERS
+_ST_IDY_PLAYER_QUEUE = _ST_IDY_SCORES + _MAX_PLAYERS # current player ordering, players left to play
+_ST_IDY_POWER_CARDS = _ST_IDY_PLAYER_QUEUE+_MAX_PLAYERS # chosen power card for each player
 
 
-_ST_IDY_END = max((_ST_IDY_SECRETSELS+_MAX_PLAYERS),(_ST_IDY_CARDS+_MAX_PLAYERS),(_ST_IDY_PLAYER_QUEUE+_MAX_PLAYERS),_NUM_POWER_CARDS,_MAX_DECK_COUNT) #current max should be 18
+_ST_IDY_END = max((_ST_IDY_SECRETSELS+_MAX_PLAYERS),(_ST_IDY_CARDS+_MAX_PLAYERS),(_ST_IDY_POWER_CARDS+_MAX_PLAYERS),_NUM_POWER_CARDS,_MAX_DECK_COUNT) #current max should be 18
 
 _ST_IDCH = 5 #highest number in the matrix should be 32, so want 5 channels
 
@@ -203,7 +205,11 @@ class ElGrandeGameState(object):
             #here, card ID is in single index format (up to 43) - not per-deck. Add 1 so we can use 0==not-played
             card_id = self._cards.keys().index[card]
             self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS+player_id]=card_id+1
-        #TODO - this turn's power cards played by players, for determining order of actions
+        #this turn's power cards played by players
+        for player_name in data['powercards'].keys()
+            player_id = self._get_pid(player_name)
+            card=data['powercards'][player_name]
+            self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_POWER_CARDS+player_id]=card
         #score for each player (in 2nd gamecontrol column)
         for player_name in data['scores'].keys()
             player_id = self._get_pid(player_name)
@@ -545,9 +551,62 @@ class ElGrandeGameState(object):
 
     def _after_power_choice():
         #functions to determine if we should move to the next phase and/or the next player, and who that player might be
+        next_player = self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_PLAYER_QUEUE]
+        if next_player > 0:
+            #set current player
+            self._cur_player = next_player
+            #move all players up one
+            for i in range(_MAX_PLAYERS-1):
+                self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_PLAYER_QUEUE+i]=self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_PLAYER_QUEUE+i+1]
+            self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_PLAYER_QUEUE+_MAX_PLAYERS-1]=0
+        else:
+            #redo the whole queue, and move on to 'action' phase
+            powcards = {self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_POWER_CARDS+i]:i for i in range(self._num_players)} 
+            orderid=0
+            keys = sorted(powcards.keys(),reverse=True)
+            self._cur_player = keys[0]
+            for i in keys[1:]:
+                self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_PLAYER_QUEUE+orderid]=i
+                orderid+=1
+            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_PHASE]=_PHASE_NAMES['action']
 
     def _after_action_step():    
         #functions to determine if we should move to the next phase and/or the next player, and who that player might be
+        if self._movement_tracking.get('moving',False):
+            #still in the process of moving caballeros - don't do anything
+        else:
+            next_player = self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_PLAYER_QUEUE]
+            if next_player > 0:
+                #set current player
+                self._cur_player = next_player
+                #move all players up one
+                for i in range(_MAX_PLAYERS-1):
+                    self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_PLAYER_QUEUE+i]=self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_PLAYER_QUEUE+i+1]
+                self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_PLAYER_QUEUE+_MAX_PLAYERS-1]=0
+            else:
+                #redo the whole queue, and move to 'score' phase if appropriate, next power choosing phase otherwise
+                if _SCORING_ROUND[self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ROUND]]:
+                    self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_PHASE]=_PHASE_NAMES['score']
+                else:
+                    powcards = {self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_POWER_CARDS+i]:i for i in range(self._num_players)}
+                    start_player = power[sorted(powcards.keys())[1]]
+                    self._cur_player = start_player
+                    for i in range(1,self._num_players):
+                        self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_PLAYER_QUEUE+i] = (start_player+i) % self._num_players
+                    self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_PHASE]=_PHASE_NAMES['power']
+                    self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ROUND]+=1
+                    
+    def _after_score_step():
+        new_scores = self._score_all_regions()
+        if self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ROUND]==_MAX_TURNS
+            #win points normalised between 0 and 1
+            min_score = min(new_scores)
+            divisor = max(new_scores)-min_score
+            self._win_points = [(f-min_score)/divisor for f in final_scores]
+            self._cur_player = pyspiel.PlayerId.TERMINAL
+            self._is_terminal=True
+        else:
+            self._cur_player = self._get_next_player()
         
     # OpenSpiel (PySpiel) API functions are below. These need to be provided by
     # every game. Some not-often-used methods have been omitted.
@@ -638,7 +697,11 @@ class ElGrandeGameState(object):
             self._setup_action()
         elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + _NUM_REGIONS:
             self._set_secret_region(action - _ACT_CHOOSE_SECRETS)
-            self._after_action_step() 
+            if self._phase_name()=='score':
+                self._after_score_step()
+            else:
+                #if we weren't chosing for cab movement in scoring, we were choosing for a card action
+                self._after_action_step() 
         elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + _NUM_REGIONS:
             self._move_grande(action - _ACT_MOVE_GRANDES)
             self._after_action_step() 
@@ -653,16 +716,6 @@ class ElGrandeGameState(object):
             self._move_one_cab(fromRegion, toRegion, ofPlayer)        
             self._after_action_step() 
     
-        if self._is_game_end():
-            final_scores = self._score_all_regions()
-            #win points normalised between 0 and 1
-            min_score = min(final_scores)
-            divisor = max(final_scores)-min_score
-            self._win_points = [(f-min_score)/divisor for f in final_scores]
-            self._cur_player = pyspiel.PlayerId.TERMINAL
-            self._is_terminal=True
-        else:
-            self._cur_player = self._get_next_player()
     
     def action_to_string(self, arg0, arg1=None):
         """Action -> string. Args either (player, action) or (action)."""
