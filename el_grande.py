@@ -140,6 +140,7 @@ class ElGrandeGameState(object):
         self._state_matrix_add_cabs_grandes(jsonData['pieces'])
         self._state_matrix_add_deck_info(jsonData['cards'],jsonData['pastcards'])
         self._state_matrix_add_turn_info(jsonData['turninfo'])
+
         
     def _state_matrix_add_king(self,region_name):
         region_id = self._get_rid(region_name)
@@ -202,6 +203,7 @@ class ElGrandeGameState(object):
             #here, card ID is in single index format (up to 43) - not per-deck. Add 1 so we can use 0==not-played
             card_id = self._cards.keys().index[card]
             self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS+player_id]=card_id+1
+        #TODO - this turn's power cards played by players, for determining order of actions
         #score for each player (in 2nd gamecontrol column)
         for player_name in data['scores'].keys()
             player_id = self._get_pid(player_name)
