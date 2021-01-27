@@ -71,8 +71,8 @@ _ST_IDCH = 5 #highest number in the matrix should be 32, so want 5 channels
 _ACT_DEAL = 0
 _ACT_CARDS = 1 #start of 'select a card' actions
 _ACT_POWERS = _ACT_CARDS + _NUM_ACTION_CARDS #select power cards
-_ACT_RETRIEVE_POWERS = _ACT_POWERS + _NUM_POWERS #get back an old power card
-_ACT_DECIDE_CAB = _ACT_RETRIEVE_POWERS + _NUM_POWERS #decide to place cabs first
+_ACT_RETRIEVE_POWERS = _ACT_POWERS + _NUM_POWER_CARDS #get back an old power card
+_ACT_DECIDE_CAB = _ACT_RETRIEVE_POWERS + _NUM_POWER_CARDS #decide to place cabs first
 _ACT_DECIDE_ACT = _ACT_DECIDE_CAB + 1 #decide to play the action card first
 _ACT_DECIDE_ACT_ALT = _ACT_DECIDE_ACT + 1 #special for the 'OR' card - decide on the second action
 _ACT_CHOOSE_SECRETS = _ACT_DECIDE_ACT_ALT + 1 #choose one secret region
@@ -92,7 +92,6 @@ class ElGrandeGameState(object):
         self._num_players = 0
         self._is_terminal = False
         self._history = []
-        self._win_points = np.full(players, 0)
         self._winner = False
         self._state_matrix = np.full((_ST_IDX_END,_ST_IDY_END),0)
         self._cards = {} #cards will be loaded at state initialisation
@@ -123,19 +122,22 @@ class ElGrandeGameState(object):
 
 
     def _load_game_info(self,jsonData):
-        self._regions = jsonData["Regions"]
+        self._regiondata = jsonData["Regions"]
+        self._regions = [r for r in self._regiondata.keys() if r!='Castillo']+['Castillo','court','province']
         self._neighbors = self._init_neighbors()
         self._players = jsonData["Players"]
         self._num_players = len(self._players)
+        self._win_points = np.full(self._num_players, 0)
         self._decks = jsonData["Cards"]
         #also list cards in one dictionary, so we have an index
         for deck in self._decks:
-            for cardguid in deck.keys():
-                self._cards[cardguid]=deck[cardguid]
+            for cardguid in self._decks[deck]:
+                self._cards[cardguid]=self._decks[deck][cardguid]
         assert(len(self._cards.keys())==_NUM_ACTION_CARDS)
         #mobile scoreboard data, indexed by guid, containing points
-        self._scoreboards = jsonData['scoreboards']
+        self._scoreboards = jsonData['Scoreboards']
             
+
     #turn all relevant state info from DB format into game format
     def _load_game_state(self,jsonData):
         self._state_matrix_add_king(jsonData['king'])
@@ -179,13 +181,13 @@ class ElGrandeGameState(object):
             
     def _state_matrix_add_turn_info(self,data):
         #power cards
-        for player_name in data['powercards'].keys()
+        for player_name in data['powercards'].keys():
             player_id = self._get_pid(player_name)
             power_id = data['powercards'][player_name]
             assert(power_id <= _NUM_POWER_CARDS and power_id > 0) #power_id from 1 to _NUM_POWER_CARDS
             self._state_matrix[(_ST_IDX_POWERS+player_id),(power_id-1)]=1
         #past power cards
-        for player_name in data['powerplayed'].keys()
+        for player_name in data['powerplayed'].keys():
             player_id = self._get_pid(player_name)
             for power_id in data['powercards'][player_name]:
                 assert(power_id <= _NUM_POWER_CARDS and power_id > 0) #power_id from 1 to _NUM_POWER_CARDS
@@ -199,19 +201,19 @@ class ElGrandeGameState(object):
             self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACT_DONE]=int(data['actionsdone'][data['playersleft'][0]])
             self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CAB_DONE]=int(data['cabsdone'][data['playersleft'][0]])
         #this turn's cards played by players
-        for player_name in data['actioncards'].keys()
+        for player_name in data['actioncards'].keys():
             player_id = self._get_pid(player_name)
             card=data['actioncards'][player_name]
             #here, card ID is in single index format (up to 43) - not per-deck. Add 1 so we can use 0==not-played
             card_id = self._cards.keys().index[card]
             self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS+player_id]=card_id+1
         #this turn's power cards played by players
-        for player_name in data['powercards'].keys()
+        for player_name in data['powercards'].keys():
             player_id = self._get_pid(player_name)
             card=data['powercards'][player_name]
             self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_POWER_CARDS+player_id]=card
         #score for each player (in 2nd gamecontrol column)
-        for player_name in data['scores'].keys()
+        for player_name in data['scores'].keys():
             player_id = self._get_pid(player_name)
             score = data['scores'][player_name]
             self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_SCORES+player_id]=score
@@ -222,9 +224,8 @@ class ElGrandeGameState(object):
             
     def _init_neighbors(self):
         neighbors = np.full(_NUM_REGIONS,None)
-        for region in self._regions.keys():
-            region_id = _get_rid(region)
-            neighbors[region_id]=[self._get_rid(r) for r in self._regions[region]['neighbors']]
+        for region_id in range(_NUM_REGIONS):
+            neighbors[region_id]=[self._get_rid(r) for r in self._regiondata[self._regions[region_id]]['neighbors']]
         self._neighbors = neighbors
                  
     #functions for doing actions
@@ -249,8 +250,10 @@ class ElGrandeGameState(object):
     def _retrieve_power(self,power_id):
         self._state_matrix[_ST_IDX_POWERPASTS,power_id]=0
         
-    def _set_secret_region(self,region_id,player_id=self._cur_player):
+    def _set_secret_region(self,region_id,player_id=-1):
         #ensure only one set at a time
+        if player_id==-1:
+            player_id = self._cur_player
         self._state_matrix[:_NUM_REGIONS,_ST_IDY_SECRETSELS+player_id]=np.zeros(_NUM_REGIONS)
         self._state_matrix[region_id,_ST_IDY_SECRETSELS+player_id]=1
 
@@ -270,12 +273,11 @@ class ElGrandeGameState(object):
         self._register_cab_moved(from_region,to_region,of_player)
         
     def _region_str(self,region_id):
-        all_region_names = self._regions + ["Castillo","court","province"]
-        retstr = all_region_names[region_id] + " :" + "|".join([str(i) for i in self._state_matrix[region_id,_ST_IDY_CABS:(_ST_IDY_CABS + self._num_players)]])
-        grandes = [str(i) for i in range(self._max_players) if self._state_matrix[region_id,_ST_IDY_GRANDES:(_ST_IDY_GRANDES + self._max_players)][i]==1]
+        retstr = self._regions[region_id] + " :" + "|".join([str(i) for i in self._state_matrix[region_id,_ST_IDY_CABS:(_ST_IDY_CABS + self._num_players)]])
+        grandes = [str(i) for i in range(self._num_players) if self._state_matrix[region_id,_ST_IDY_GRANDES:(_ST_IDY_GRANDES + self._num_players)][i]==1]
         if len(grandes)>0:
             retstr = retstr + " G(" + "|".join(grandes) + ")"
-        if self._state_matrix[region_id,_ST_IDY_KING]==1]:
+        if self._state_matrix[region_id,_ST_IDY_KING]==1:
             retstr = retstr + " K"
         return retstr
     
@@ -427,7 +429,7 @@ class ElGrandeGameState(object):
             pattern['min']=pattern['max']
         
         #there may be a condition on choice of 'from' region - check it
-        if card_details['from']['condition'] != None
+        if card_details['from']['condition'] != None:
             self._movement_tracking['fromcondition']=int(card_details['from']['condition'])
         end
         self._movement_tracking['patterns']=[pattern]   
@@ -572,9 +574,8 @@ class ElGrandeGameState(object):
 
     def _after_action_step():    
         #functions to determine if we should move to the next phase and/or the next player, and who that player might be
-        if self._movement_tracking.get('moving',False):
-            #still in the process of moving caballeros - don't do anything
-        else:
+        if not self._movement_tracking.get('moving',False):
+            #if still in the process of moving caballeros then don't do anything
             next_player = self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_PLAYER_QUEUE]
             if next_player > 0:
                 #set current player
@@ -598,7 +599,7 @@ class ElGrandeGameState(object):
                     
     def _after_score_step():
         new_scores = self._score_all_regions()
-        if self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ROUND]==_MAX_TURNS
+        if self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ROUND]==_MAX_TURNS:
             #win points normalised between 0 and 1
             min_score = min(new_scores)
             divisor = max(new_scores)-min_score
@@ -673,7 +674,7 @@ class ElGrandeGameState(object):
     def apply_action(self, action):
         """Applies the specified action to the state"""
 
-        #possible actions: _ACT_DEAL, _ACT_CARDS (+ _NUM_ACTION_CARDS), _ACT_POWERS (+ _NUM_POWERS), _ACT_RETRIEVE_POWERS (+ _NUM_POWERS), 
+        #possible actions: _ACT_DEAL, _ACT_CARDS (+ _NUM_ACTION_CARDS), _ACT_POWERS (+ _NUM_POWER_CARDS), _ACT_RETRIEVE_POWERS (+ _NUM_POWER_CARDS), 
         # _ACT_DECIDE_CAB, _ACT_DECIDE_ACT = _ACT_DECIDE_CAB + 1, _ACT_CHOOSE_SECRETS (+ _NUM_REGIONS), _ACT_MOVE_GRANDES (+ _NUM_REGIONS), 
         # _ACT_MOVE_KINGS (+ _NUM_REGIONS), _ACT_CAB_MOVES (+ _NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS)
 
@@ -681,10 +682,10 @@ class ElGrandeGameState(object):
             self._deal_all_decks()
         elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
             self._assign_card(action - _ACT_CARDS)
-        elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWERS:
+        elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWER_CARDS:
             self._assign_power(action - _ACT_POWERS)
             self._after_power_choice() #find next player to pick power card, or move on one phase
-        elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + _NUM_POWERS:
+        elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + _NUM_POWER_CARDS:
             self._retrieve_power(action - _ACT_RETRIEVE_POWERS)
             self._after_action_step() #check if we need to move to next player, or next step, or keep playing actions
         elif action == _ACT_DECIDE_CAB:
@@ -727,9 +728,9 @@ class ElGrandeGameState(object):
         elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
             cardname = self._cards[action-_ACT_CARDS]['name']
             actionString = "Action "+cardname
-        elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWERS:
+        elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWER_CARDS:
             actionString = "Power "+str(action + 1 - _ACT_POWERS)
-        elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + _NUM_POWERS:
+        elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + _NUM_POWER_CARDS:
             actionString = "Retrieve Power "+str(action + 1 - _ACT_RETRIEVE_POWERS)
         elif action == _ACT_DECIDE_CAB:
             actionString = "Decide Caballeros First"
@@ -746,7 +747,7 @@ class ElGrandeGameState(object):
             fromRegion = (action- _ACT_CAB_MOVES)//(_NUM_CAB_AREAS * _MAX_PLAYERS)
             toRegion = ((action- _ACT_CAB_MOVES)%(_NUM_CAB_AREAS * _MAX_PLAYERS))//_MAX_PLAYERS
             ofPlayer = (action- _ACT_CAB_MOVES)%_MAX_PLAYERS
-            actionString = self._players[ofPlayer] + " caballero from " + self._regions[fromRegion] + " to " self._regions[toRegion]        
+            actionString = self._players[ofPlayer] + " caballero from " + self._regions[fromRegion] + " to " + self._regions[toRegion]        
         
         return "{} ({})".format(player,actionString)
 
@@ -814,11 +815,11 @@ class ElGrandeGameState(object):
         #                        - power cards by player
         #                        - action cards by deck, replacing name with playerID if played
         lines = []
-        for i in range(_NUM_CAB_REGIONS):
-            lines = lines + self._region_str(i)
+        for i in range(_NUM_CAB_AREAS):
+            lines = lines + [self._region_str(i)]
         for i in range(self._num_players):
-            lines = lines + self._power_str(i)
-        lines = lines + self._action_str()
+            lines = lines + [self._power_str(i)]
+        lines = lines + [self._action_str()]
         return "\n".join(lines)
 
     def clone(self):
@@ -834,8 +835,8 @@ class ElGrandeGame(object):
     def __init__(self):
         pass
 
-    def new_initial_state(self, players=_DEFAULT_PLAYERS):
-        return ElGrandeGameState(self,players)
+    def new_initial_state(self):
+        return ElGrandeGameState(self)
 
     def num_distinct_actions(self):
         return _ACT_END
