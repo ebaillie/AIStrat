@@ -282,13 +282,13 @@ class ElGrandeGameState(object):
         return retstr
     
     def _power_str(self,player_id):
-        current = str(self._state_matrix[_ST_IDX_POWERS+player_id].index(1))
+        current = str(np.where(self._state_matrix[_ST_IDX_POWERS+player_id]==1))
         past = [str(i) for i in self._state_matrix[_ST_IDX_POWERS+player_id,:_NUM_POWER_CARDS]]
         return str(player_id) + ": " + current + " (" + ",".join(past) + ")"
 
     def _action_str(self):
         #first four decks + king card
-        cards = [self._decks["Deck"+str(deck_id + 1)][self._state_matrix[_ST_IDX_DECK+deck_id,:].index(1)] for deck_id in range(_NUM_FULL_DECKS)] + self._decks["Deck5"]
+        cards = [self._decks["Deck"+str(deck_id + 1)][np.where(self._state_matrix[_ST_IDX_DECKS+deck_id,:]==1)[0][0]] for deck_id in range(_NUM_FULL_DECKS)] + self._decks["Deck5"]
         played_cards_ids = self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS:(_ST_IDY_CARDS + self._num_players)]
         played_cards = {self._cards[played_cards_ids[i]-1]:i for i in range(self._num_players) if played_cards_ids[i]>0}
         for key in played_cards.keys():
@@ -342,7 +342,7 @@ class ElGrandeGameState(object):
     
     def _pack_court(self):
         #move the correct number of caballeros from province to court, at the point where player action commences
-        power = self._state_matrix[_ST_IDX_POWERS,:_NUM_POWER_CARDS ].index(1)
+        power = np.where(self._state_matrix[_ST_IDX_POWERS,:_NUM_POWER_CARDS ]==1)[0][0]
         n_cabs = _POWER_CABS[power]
         self._state_matrix[_ST_IDX_PROVINCE,self._cur_player] = self._state_matrix[_ST_IDX_PROVINCE,self._cur_player] - n_cabs
         self._state_matrix[_ST_IDX_COURT,self._cur_player] = self._state_matrix[_ST_IDX_COURT,self._cur_player] + n_cabs
@@ -352,7 +352,7 @@ class ElGrandeGameState(object):
         #set correct state information for where we will be allowed to place caballeros
         self._movement_tracking['from']=[_ST_IDX_COURT]
         self._movement_tracking['lockfrom']=False
-        region_king = self._state_matrix[:_NUM_REGIONS,_ST_IDY_KING].index(1)
+        region_king = np.where(self._state_matrix[:_NUM_REGIONS,_ST_IDY_KING]==1)[0][0]
         self._movement_tracking['to']=self._neighbors[region_king]+[_ST_IDX_CASTILLO]
         self._movement_tracking['lockto']=False
         self._moving = True
