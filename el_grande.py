@@ -122,7 +122,7 @@ class ElGrandeGameState(object):
         return _PHASE_NAMES.index(phaseName)
     
     def _get_current_card(self):
-        return self._cards[self._cardtrack[self._state_matrix[self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS+self._cur_player]-1]]]
+        return self._cards[self._cardtrack[self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS+self._cur_player]]]
 
 
     def _load_game_info(self,jsonData):
@@ -139,7 +139,7 @@ class ElGrandeGameState(object):
         deckidx=0
         for deck in jsonData["Cards"]:
             deckidx =0
-            decknum = deck[4]
+            decknum = int(deck[4])
             for cardguid in jsonData["Cards"][deck]:
                 globalidx += 1
                 deckidx += 1
@@ -171,62 +171,71 @@ class ElGrandeGameState(object):
             player_id = self._get_pid(player_name)
             for key in data[player_name].keys():
                 if key=="grande":
-                    region_id = self._get_region(data[player_name][key])
+                    region_id = self._get_rid(data[player_name][key])
                     assert(region_id < _ST_IDX_CASTILLO)
                     self._state_matrix[(_ST_IDX_REGIONS+region_id),_ST_IDY_GRANDES + player_id]=1
                 else:
-                    region_id = self._get_region(key)
+                    region_id = self._get_rid(key)
                     assert(region_id < _ST_IDX_POWERS)
                     self._state_matrix[(_ST_IDX_REGIONS+region_id),_ST_IDY_CABS + player_id]=data[player_name][key]
 
-    def _state_matrix_add_deck_info(cards,pastcards):
+    def _state_matrix_add_deck_info(self,cards,pastcards):
         #action cards, sorted by deck
-        for deck in cards.keys():
-            card_id = self._get_cid(cards[deck],False)
-            #decks all labelled 'Deckn'
-            deck_id = deck[4]-1
-            if deck_id <= _NUM_FULL_DECKS:
-                self._state_matrix[(_ST_IDX_DECKS+deck_id),(card_id)]=1
+        if len(cards)>0:
+            for deck in cards.keys():
+                card_id = self._get_cid(cards[deck],False)
+                #decks all labelled 'Deckn'
+                deck_id = int(deck[4])-1
+                if deck_id <= _NUM_FULL_DECKS:
+                    self._state_matrix[(_ST_IDX_DECKS+deck_id),(card_id)]=1
+
         for deck in pastcards.keys():
-            deck_id = deck[4]-1
+            deck_id = int(deck[4])-1
             assert(deck_id<_NUM_FULL_DECKS)
-            for card in cards[deck]:
-                card_id = self._get_cid(deck,False)
+            for card in pastcards[deck]:
+                card_id = self._get_cid(card,False)
                 self._state_matrix[(_ST_IDX_DECKPASTS+deck_id),(card_id)]=1
             
     def _state_matrix_add_turn_info(self,data):
         #power cards
-        for player_name in data['powercards'].keys():
-            player_id = self._get_pid(player_name)
-            power_id = data['powercards'][player_name]
-            assert(power_id <= _NUM_POWER_CARDS and power_id > 0) #power_id from 1 to _NUM_POWER_CARDS
-            self._state_matrix[(_ST_IDX_POWERS+player_id),(power_id-1)]=1
-        #past power cards
-        for player_name in data['powerplayed'].keys():
-            player_id = self._get_pid(player_name)
-            for power_id in data['powercards'][player_name]:
+        if len(data['powercards'])>0:
+            for player_name in data['powercards'].keys():
+                player_id = self._get_pid(player_name)
+                power_id = int(data['powercards'][player_name])
                 assert(power_id <= _NUM_POWER_CARDS and power_id > 0) #power_id from 1 to _NUM_POWER_CARDS
-                self._state_matrix[(_ST_IDX_POWERPASTS+player_id),(power_id-1)]=1
+                self._state_matrix[(_ST_IDX_POWERS+player_id),(power_id-1)]=1
+
+        #past power cards
+        if len(data['powerplayed'])>0:
+            for player_name in data['powerplayed'].keys():
+                player_id = self._get_pid(player_name)
+                for power_id in data['powerplayed'][player_name]:
+                    assert(power_id <= _NUM_POWER_CARDS and power_id > 0) #power_id from 1 to _NUM_POWER_CARDS
+                    self._state_matrix[(_ST_IDX_POWERPASTS+player_id),(power_id-1)]=1
         #round
         self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ROUND]=data['round']
         #phase
         self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_PHASE]=self._get_phaseid(data['phase'])
         #action and/or cabs for current player
         if len(data['playersleft'])>0:
-            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACT_DONE]=int(data['actionsdone'][data['playersleft'][0]])
-            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CAB_DONE]=int(data['cabsdone'][data['playersleft'][0]])
+            if len(data['actionsdone'])>0:
+                self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_ACT_DONE]=int(data['actionsdone'].get(data['playersleft'][0],False))
+            if len(data['cabsdone'])>0:
+                self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CAB_DONE]=int(data['cabsdone'].get(data['playersleft'][0],False))
         #this turn's cards played by players
-        for player_name in data['actioncards'].keys():
-            player_id = self._get_pid(player_name)
-            card=data['actioncards'][player_name]
-            #here, card ID is in single index format (1 - 43) - not per-deck. 
-            card_id = self._get_cid(card)
-            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS+player_id]=card_id
+        if len(data['actioncards'])>0:
+            for player_name in data['actioncards'].keys():
+                player_id = self._get_pid(player_name)
+                card=data['actioncards'][player_name]
+                #here, card ID is in single index format (1 - 43) - not per-deck. 
+                card_id = self._get_cid(card)
+                self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS+player_id]=card_id
         #this turn's power cards played by players
-        for player_name in data['powercards'].keys():
-            player_id = self._get_pid(player_name)
-            card=data['powercards'][player_name]
-            self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_POWER_CARDS+player_id]=card
+        if len(data['powercards'])>0:
+            for player_name in data['powercards'].keys():
+                player_id = self._get_pid(player_name)
+                card=data['powercards'][player_name]
+                self._state_matrix[_ST_IDX_GAMECONTROL2,_ST_IDY_POWER_CARDS+player_id]=card
         #score for each player (in 2nd gamecontrol column)
         for player_name in data['scores'].keys():
             player_id = self._get_pid(player_name)
@@ -237,6 +246,7 @@ class ElGrandeGameState(object):
         for k in range(len(player_queue)):
             self._state_matrix[_ST_IDX_GAMECONTROL2,(_ST_IDY_PLAYER_QUEUE+k)]=self._get_pid(player_queue[k])
             
+    def _init_neighbors(self):
         neighbors = np.full(_NUM_REGIONS,None)
         for region_id in range(_NUM_REGIONS):
             neighbors[region_id]=[self._get_rid(r) for r in self._regiondata[self._regions[region_id]]['neighbors']]
@@ -302,7 +312,12 @@ class ElGrandeGameState(object):
 
     def _action_str(self):
         #first four decks + king card
-        cards = [self._cardtrack[self._decktrack[deck_id,np.where(self._state_matrix[_ST_IDX_DECKS+deck_id,:]==1)[0][0]]] for deck_id in range(_NUM_FULL_DECKS)] + [self._cardtrack[_NUM_ACTION_CARDS]]
+        cards = []
+        for deck_id in range(_NUM_FULL_DECKS):
+            posns = np.where(self._state_matrix[_ST_IDX_DECKS+deck_id,:]==1)[0]
+            if len(posns)>0:
+                cards = cards+[self._cardtrack[self._decktrack[(deck_id+1),posns[0]]]]
+        cards = cards + [self._cardtrack[_NUM_ACTION_CARDS-1]]
         played_cards_ids = self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_CARDS:(_ST_IDY_CARDS + self._num_players)]
         played_cards = {self._cardtrack[played_cards_ids[i]-1]:i for i in range(self._num_players) if played_cards_ids[i]>0}
         for key in played_cards.keys():
@@ -695,7 +710,7 @@ class ElGrandeGameState(object):
         if action==_ACT_DEAL:
             self._deal_all_decks()
         elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
-            self._assign_card(action - _ACT_CARDS)
+            self._assign_card(action - _ACT_CARDS + 1)
         elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWER_CARDS:
             self._assign_power(action - _ACT_POWERS)
             self._after_power_choice() #find next player to pick power card, or move on one phase
