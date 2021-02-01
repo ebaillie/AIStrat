@@ -518,7 +518,7 @@ class ElGrandeGameState(object):
 
     def _set_valid_cab_movements():
         #use movement tracking info to determine which from/to moves are okay
-        mask=[0]*_ACT_END
+        actions=[]
         for fromreg in self._movement_tracking['from']:
             for toreg in self._movement_tracking['to']:
                 players=[]
@@ -538,8 +538,8 @@ class ElGrandeGameState(object):
                 for player in players:
                     if self._board_state[fromreg,player] >0:
                         #there is a caballero here of the correct colour, so this move action is okay
-                        mask[player + _NUM_CAB_AREAS*(toreg + _NUM_CAB_AREAS*fromreg)]=1
-        return mask 
+                        actions.append(player + _NUM_CAB_AREAS*(toreg + _NUM_CAB_AREAS*fromreg))
+        return actions
 
     def _register_cab_moved(self,fromreg,toreg,ofplayer):
         for pattern in self._movement_tracking['patterns']:
@@ -566,34 +566,34 @@ class ElGrandeGameState(object):
         activecard = self._get_current_card()
         assert(len(activecards)==1)
         valid_action = activecard['actiontype']
-        mask=[0]*_ACT_END
+        actions=[]
         if valid_action=='move':
             return self._set_valid_cab_movements()
         elif valid_action=='score':
             #if a 'score' action ends up here, we need to do region choice
             for i in range(_NUM_REGIONS):
-                mask[_ACT_CHOOSE_SECRETS+i]=1
-            return mask
+                actions.append(_ACT_CHOOSE_SECRETS+i)
+            return actions
         elif valid_action=='power':
             for i in range(_NUM_POWER_CARDS):
-                mask[_ACT_RETRIEVE_POWERS+i]=1
-            return mask
+                actions.append(_ACT_RETRIEVE_POWERS+i)
+            return actions
         elif valid_action=='grande':
             for i in range(_NUM_REGIONS):
-                mask[_ACT_MOVE_GRANDES+i]=1
-            return mask
+                actions.append(_ACT_MOVE_GRANDES+i)
+            return actions
         elif valid_action=='scoreboard':
             for i in range(_NUM_REGIONS*_NUM_SCOREBOARDS):
-                mask[_ACT_MOVE_SCOREBOARDS+i]=1
-            return mask
+                actions.append(_ACT_MOVE_SCOREBOARDS+i)
+            return actions
         elif valid_action=='king':
             for i in range(_NUM_REGIONS):
-                mask[_ACT_MOVE_KING+i]=1
-            return mask
+                actions.append(_ACT_MOVE_KING+i)
+            return actions
         elif valid_action=='uniquescore':
             for i in range(_NUM_REGIONS):
-                mask[_ACT_CHOOSE_SECRETS+i]=1
-            return mask
+                actions.append(_ACT_CHOOSE_SECRETS+i)
+            return actions
 
     def _after_power_choice():
         #functions to determine if we should move to the next phase and/or the next player, and who that player might be
@@ -664,13 +664,35 @@ class ElGrandeGameState(object):
           A list of legal moves, where each move is in [0, num_distinct_actions - 1]
           at non-terminal states, and empty list at terminal states.
         """
-
         if player is not None and player != self._cur_player:
             return []
         elif self.is_terminal():
             return []
         else:
-            return range(_ACT_END)
+            actions = []
+            if self._phase_name()=='start':
+                actions.append(_ACT_DEAL)
+                return actions
+            elif self._phase_name()=='power':
+                for i in range(_NUM_POWER_CARDS):
+                    actions.append(_ACT_POWERS+i)
+                return actions
+            elif self._phase_name()=='action':
+                for i in range(_NUM_ACTION_CARDS):
+                    actions.append(_ACT_CARDS+i)
+                return actions
+            elif self._phase_name()=='actionchoose':
+                actions.append(_ACT_DECIDE_CAB)
+                actions.append(_ACT_DECIDE_ACT)
+            elif self._phase_name()=='actioncard':
+                actions.append(self._set_valid_actions_from_card())
+            elif self._phase_name()=='actioncab':
+                actions.append(self._set_valid_cab_movements())
+            else:
+                #must be score - choose a secret region
+                for i in range(_NUM_REGIONS):
+                    actions.append(_ACT_CHOOSE_SECRETS+i)
+                return actions
 
     def legal_actions_mask(self, player=None):
         """Get a list of legal actions.
@@ -686,30 +708,12 @@ class ElGrandeGameState(object):
         elif self.is_terminal():
             return []
         else:
-            mask=[0]*_ACT_END
-            if self._phase_name()=='start':
-                mask[_ACT_DEAL]=1
-                return mask
-            elif self._phase_name()=='power':
-                for i in range(_NUM_POWER_CARDS):
-                    mask[_ACT_POWERS+i]=1
-                return mask
-            elif self._phase_name()=='action':
-                for i in range(_NUM_ACTION_CARDS):
-                    mask[_ACT_CARDS+i]=1
-                return mask
-            elif self._phase_name()=='actionchoose':
-                mask[_ACT_DECIDE_CAB]=1
-                mask[_ACT_DECIDE_ACT]=1
-            elif self._phase_name()=='actioncard':
-                mask = self._set_valid_actions_from_card()
-            elif self._phase_name()=='actioncab':
-                mask = self._set_valid_cab_movements()
-            else:
-                #must be score - choose a secret region
-                for i in range(_NUM_REGIONS):
-                    mask[_ACT_CHOOSE_SECRETS+i]=1
-                return mask
+            action_mask = [0] * _ACT_END
+            for action in self.legal_actions():
+                action_mask[action] = 1
+            return action_mask
+
+
                 
 
     def apply_action(self, action):
