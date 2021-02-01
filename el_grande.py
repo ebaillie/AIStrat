@@ -670,23 +670,23 @@ class ElGrandeGameState(object):
             return []
         else:
             actions = []
-            if self._phase_name()=='start':
+            if _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='start':
                 actions.append(_ACT_DEAL)
                 return actions
-            elif self._phase_name()=='power':
+            elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='power':
                 for i in range(_NUM_POWER_CARDS):
                     actions.append(_ACT_POWERS+i)
                 return actions
-            elif self._phase_name()=='action':
+            elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='action':
                 for i in range(_NUM_ACTION_CARDS):
                     actions.append(_ACT_CARDS+i)
                 return actions
-            elif self._phase_name()=='actionchoose':
+            elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='actionchoose':
                 actions.append(_ACT_DECIDE_CAB)
                 actions.append(_ACT_DECIDE_ACT)
-            elif self._phase_name()=='actioncard':
+            elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='actioncard':
                 actions.append(self._set_valid_actions_from_card())
-            elif self._phase_name()=='actioncab':
+            elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='actioncab':
                 actions.append(self._set_valid_cab_movements())
             else:
                 #must be score - choose a secret region
