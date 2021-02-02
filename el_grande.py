@@ -34,9 +34,9 @@ _DEFAULT_PLAYERS = 4
 #Board state - indicators for caballero count,grande and king placement, and secret region vote
 
 _ST_BDX_REGIONS = 0 #start of regions
-_ST_BDX_CASTILLO = _ST_IDX_REGIONS + _NUM_REGIONS
-_ST_BDX_COURT = _ST_IDX_CASTILLO + 1
-_ST_BDX_PROVINCE = _ST_IDX_COURT + 1
+_ST_BDX_CASTILLO = _ST_BDX_REGIONS + _NUM_REGIONS
+_ST_BDX_COURT = _ST_BDX_CASTILLO + 1
+_ST_BDX_PROVINCE = _ST_BDX_COURT + 1
 _ST_BDX_END = _ST_BDX_PROVINCE + 1
 
 _ST_BDY_CABS = 0 #start of cab counts in region columns (per-player)
@@ -50,11 +50,22 @@ _ST_MASK_KING = _MAX_PLAYERS+1 #in the king/grande mask, king is at end
 _ST_AC_UNPLAYED = 0
 _ST_AC_PLAY_READY = 1 #dealt out
 _ST_AC_PLAY_INIT = 2 #selected by current player
-_ST_AC_PLAY_CABDOING = 3 #selected and cabs in motion
-_ST_AC_PLAY_CABDONE = 4 #selected and cabs placed
-_ST_AC_PLAY_ACTDOING = 5 #selected and action in progress
-_ST_AC_PLAY_ACTDONE = 6 #selected and action finished
+_ST_AC_PLAY_CABFIRST = 3 
+_ST_AC_PLAY_CABSECOND = 4 
+_ST_AC_PLAY_ACTFIRST = 5 
+_ST_AC_PLAY_ACTSECOND = 6 
 _ST_AC_DONE = 7
+
+#phases in order
+#_PHASE_NAMES = ['start','power','action','actionchoose','actioncard','actioncab','scoring','end']
+_ST_PHASE_START=0
+_ST_PHASE_POWER=1
+_ST_PHASE_ACTION=2
+_ST_PHASE_CHOOSE=3
+_ST_PHASE_CARD=4
+_ST_PHASE_CAB=5
+_ST_PHASE_SCORE=6
+_ST_PHASE_END=7
 
 #Power cards are 13 bitwise indicators (1 bit per player) for power and powerpast
 
@@ -80,7 +91,7 @@ _ACT_DECIDE_ACT_ALT = _ACT_DECIDE_ACT + 1 #special for the 'OR' card - decide on
 _ACT_CHOOSE_SECRETS = _ACT_DECIDE_ACT_ALT + 1 #choose one secret region
 _ACT_MOVE_GRANDES = _ACT_CHOOSE_SECRETS + _NUM_REGIONS
 _ACT_MOVE_KINGS = _ACT_MOVE_GRANDES + _NUM_REGIONS
-_ACT_MOVE_SCOREBOARDS = _ACT_MOVE_GRANDES + _NUM_REGIONS
+_ACT_MOVE_SCOREBOARDS = _ACT_MOVE_KINGS + _NUM_REGIONS
 _ACT_CAB_MOVES = _ACT_MOVE_SCOREBOARDS + (_NUM_SCOREBOARDS*_NUM_REGIONS)
 _ACT_END = _ACT_CAB_MOVES + (_NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS) #combos of moving a cab from region, to region, of player
 
@@ -128,18 +139,38 @@ class ElGrandeGameState(object):
         return _PHASE_NAMES.index(phaseName)
 
     def _get_current_card(self):
-        ccard = np.where(self._acard_state not in [_ST_AC_UNPLAYED,_ST_AC_DONE])
-        assert(len(ccard[0])<=1) #can have at most one card in the playable states
-        if len(ccard==0):
+        ccard = [c for c in range(_NUM_ACTION_CARDS) if self._acard_state[c] not in [_ST_AC_UNPLAYED,_ST_AC_DONE,_ST_AC_PLAY_READY]]
+        assert(len(ccard)<=1) #can have at most one card in the playable states
+        if len(ccard)==0:
             return nil
         else:
-            return self._cards[self._cardtrack[ccard[0][0]]]
+            return self._cards[self._cardtrack[ccard[0]]]
+
+    def _get_action_card_status(self):
+        ccard = [c for c in range(_NUM_ACTION_CARDS) if self._acard_state[c] not in [_ST_AC_UNPLAYED,_ST_AC_PLAY_READY,_ST_AC_DONE]
+]
+        assert(len(ccard))==1
+        return self._acard_state[ccard[0]]
+
+    def _update_action_card_status(self,phase):
+        #work out which is the current action card, and what its status should become
+        ccard = [c for c in range(_NUM_ACTION_CARDS) if self._acard_state[c] not in [_ST_AC_UNPLAYED,_ST_AC_PLAY_READY,_ST_AC_DONE]
+]
+        assert(len(ccard))==1
+        if phase==_ST_PHASE_CARD:
+            self._acard_state[ccard[0]] = _ST_AC_PLAY_ACTFIRST if self._acard_state[ccard[0]] == _ST_AC_PLAY_INIT else _ST_AC_PLAY_ACTSECOND
+        elif phase==_ST_PHASE_CAB:    
+            self._acard_state[ccard[0]] = _ST_AC_PLAY_CABFIRST if self._acard_state[ccard[0]] == _ST_AC_PLAY_INIT else _ST_AC_PLAY_CABSECOND
+        else:
+            self._acard_state[ccard[0]] = _ST_AC_DONE
+        
+        self._turn_state[_ST_TN_PHASE]=phase
 
 
     def _load_game_info(self,jsonData):
         self._regiondata = jsonData["Regions"]
         self._regions = [r for r in self._regiondata.keys() if r!='Castillo']+['Castillo','court','province']
-        self._neighbors = self._init_neighbors()
+        self._init_neighbors()
         self._players = jsonData["Players"]
         self._num_players = len(self._players)
         self._win_points = np.full(self._num_players, 0)
@@ -204,7 +235,7 @@ class ElGrandeGameState(object):
             for deck in cards.keys():
                 card_id = self._get_cid(cards[deck],True)
                 #Differentiate between init, actdone and cabdone from player info
-                #TODO - also need to figure out how _ACT_DOING and _CAB_DOING fit in here
+                #TODO - ensure this is consistent 
                 actdone=False
                 cabsdone=False
                 if len(data['playersleft'])>0:
@@ -215,11 +246,11 @@ class ElGrandeGameState(object):
                 if actdone and cabsdone:
                     self._acard_state[card_id-1]=_ST_AC_DONE
                 elif actdone and not cabsdone:
-                    self._acard_state[card_id-1]=_ST_AC_PLAY_ACTDONE
+                    self._acard_state[card_id-1]=_ST_AC_PLAY_ACTSECOND
                 elif (not actdone) and cabsdone:
-                    self._acard_state[card_id-1]=_ST_AC_PLAY_CABDONE
+                    self._acard_state[card_id-1]=_ST_AC_PLAY_CABSECOND
                 else:
-                    self._acard_state[card_id-1]=_ST_AC_PLAY_INIT
+                    self._acard_state[card_id-1]=_ST_AC_PLAY_READY
                     
 
         for deck in pastcards.keys():
@@ -274,17 +305,24 @@ class ElGrandeGameState(object):
         for deck in self._decktrack:
             card_guids = [k for k in self._decktrack[deck] if self._acard_state[self._get_cid(k)-1]==_ST_AC_UNPLAYED]
             next_card_guid = random.choice(card_guids)
-            self._acard_state[self._get_cid(next_card_guid)-1]==_ST_AC_PLAY_READY
-            
-    def _assign_card(self,card_id):
-        self._acard_state[card_id-1] = _ST_AC_PLAY_INIT
+            self._acard_state[self._get_cid(next_card_guid)-1]=_ST_AC_PLAY_READY
+        self._turn_state[_ST_TN_PHASE]=self._get_phaseid('power')
         
     def _assign_power(self,power_id):
-        self._pcard_state[power_id-1] |= pow(2,self._cur_player)
+        #power_id is array position 0..12
+        self._pcard_state[power_id] |= pow(2,self._cur_player)
+        self._past_pcard_state[power_id] |= pow(2,self._cur_player)
         
     def _retrieve_power(self,power_id):
-        self._past_pcard_state[power_id-1] -= pow(2,self._cur_player)
-        
+        self._past_pcard_state[power_id] -= pow(2,self._cur_player)
+       
+    def _available_powers(self):
+        #power cards available to current player in array position 0..12
+        #check everyone's current cards, and current player's past 
+        in_deck = [p for p in range(_NUM_POWER_CARDS) if self._pcard_state[p]==0]
+        unused = [p for p in range(_NUM_POWER_CARDS) if self._past_pcard_state[p] & pow(2,self._cur_player)==0]
+        return [p for p in range(_NUM_POWER_CARDS) if p in in_deck and p in unused]
+
     def _set_secret_region(self,region_id,player_id=-1):
         if player_id==-1:
             player_id = self._cur_player
@@ -331,10 +369,27 @@ class ElGrandeGameState(object):
         past = [str(p+1) for p in np.where(self._past_pcard_state & pow(2,player_id) == pow(2,player_id))[0]]
         return cstr + " (" + ",".join(past) + ")" + "  -  playerid " + str(player_id)
 
+    def _acard_str(self,cardpos):
+        cardstr = self._cards[self._cardtrack[cardpos]]['name']
+        if self._acard_state[cardpos]==_ST_AC_PLAY_READY:
+            return cardstr
+        elif self._acard_state[cardpos]==_ST_AC_PLAY_INIT:
+            return '* '+cardstr
+        elif self._acard_state[cardpos]==_ST_AC_PLAY_CABFIRST:
+            return 'c '+cardstr
+        elif self._acard_state[cardpos]==_ST_AC_PLAY_CABSECOND:
+            return 'C '+cardstr
+        elif self._acard_state[cardpos]==_ST_AC_PLAY_ACTFIRST:
+            return 'a '+cardstr
+        elif self._acard_state[cardpos]==_ST_AC_PLAY_ACTSECOND:
+            return 'A '+cardstr
+        else:
+            return '('+cardstr+')'
+ 
     def _action_str(self):
-        activecards = np.where(np.logical_and(self._acard_state!=_ST_AC_UNPLAYED,self._acard_state!=_ST_AC_DONE))[0] # this is array position, not card id
+        activecards = [c for c in range(_NUM_ACTION_CARDS) if self._acard_state[c]!=_ST_AC_UNPLAYED and self._acard_state[c]!= _ST_AC_DONE]
         assert(len(activecards)<=_NUM_PLAYABLE_DECKS)
-        names = [self._cards[self._cardtrack[c]]['name'] if self._acard_state[c]==_ST_AC_PLAY_INIT else "("+self._cards[self._cardtrack[c]]['name']+")" for c in activecards]
+        names = [self._acard_str(c) for c in activecards]
         return "|".join(names)
     
     def _turn_info_str(self):
@@ -395,12 +450,12 @@ class ElGrandeGameState(object):
         #set correct state information for where we will be allowed to place caballeros
         self._movement_tracking['from']=[_ST_BDX_COURT]
         self._movement_tracking['lockfrom']=False
-        region_king = np.where(self._board_state[:_NUM_REGIONS,_ST_BDY_GRANDE_KING] & pow(2,_ST_KING_MASK) == pow(2,_ST_KING_MASK))[0][0]
+        region_king = [b for b in range (_NUM_REGIONS) if self._board_state[b,_ST_BDY_GRANDE_KING] & pow(2,_ST_MASK_KING) != 0][0]
         self._movement_tracking['to']=self._neighbors[region_king]+[_ST_BDX_CASTILLO]
         self._movement_tracking['lockto']=False
         self._moving = True
         card = self._get_current_card()
-        n_cabs = min(int(card["name"][4]),self._state_matrix[_ST_BDX_PROVINCE,self._cur_player])
+        n_cabs = min(int(card["name"][4]),self._board_state[_ST_BDX_PROVINCE,self._cur_player])
         pattern = {'player':self._cur_player,'allowed':True,'max':n_cabs,'min':0}
         self._movement_tracking['patterns']=[pattern]
     
@@ -439,7 +494,7 @@ class ElGrandeGameState(object):
                 self._movement_tracking[v]=[card_details[v]['region']]
             elif card_details[v]['region']=='selfchoose':
                 #current King's region shouldn't be in the list
-                the_regions=[i for i in range(_NUM_REGIONS) if self._state_matrix[i,_ST_IDY_KING]==0]
+                the_regions=[i for i in range(_NUM_REGIONS) if self._board_state[i,_ST_IDY_KING]==0]
                 if v=='to':
                     the_regions = the_regions + [_ST_BDX_CASTILLO]
                 self._movement_tracking[v]=the_regions
@@ -483,17 +538,17 @@ class ElGrandeGameState(object):
             assert(len(fromreg)==1 and len(toreg)==1)
             sendCount=card_details['number']
             if sendCount<0:
-                sendCount= self._state_matrix[fromreg[0],_ST_BDY_CABS+self._cur_player] #figure out how much the 'all' in 'send all' is
+                sendCount= self._board_state[fromreg[0],_ST_BDY_CABS+self._cur_player] #figure out how much the 'all' in 'send all' is
             for pl in range(self._num_players):
                 sendThis=True
                 if (card_details['player']=='foreign' and pl==self._cur_player) or  (details['player']=='self' and pl!=self._cur_player):
                     sendThis=False
                 if sendThis:
-                    self._state_matrix[fromreg[0],_ST_BDY_CABS+self._cur_player] -= sendCount
-                    self._state_matrix[toreg[0],_ST_BDY_CABS+self._cur_player] += sendCount
+                    self._board_state[fromreg[0],_ST_BDY_CABS+self._cur_player] -= sendCount
+                    self._board_state[toreg[0],_ST_BDY_CABS+self._cur_player] += sendCount
 
             #null-out movement info, since we've done the move
-            #TODO - in _acard_state set this card from INIT to ACTDONE or CABDONE to DONE
+            #TODO - in _acard_state set this card from INIT to ACTFIRST or CABFIRST to DONE
             self._init_move_info()
     
         
@@ -516,7 +571,7 @@ class ElGrandeGameState(object):
             pattern['min']=pattern['max']        
         self._movement_tracking['patterns'] = self._movement_tracking.get('patterns',[]) + [pattern]
 
-    def _set_valid_cab_movements():
+    def _set_valid_cab_movements(self):
         #use movement tracking info to determine which from/to moves are okay
         actions=[]
         for fromreg in self._movement_tracking['from']:
@@ -538,7 +593,7 @@ class ElGrandeGameState(object):
                 for player in players:
                     if self._board_state[fromreg,player] >0:
                         #there is a caballero here of the correct colour, so this move action is okay
-                        actions.append(player + _NUM_CAB_AREAS*(toreg + _NUM_CAB_AREAS*fromreg))
+                        actions.append(_ACT_CAB_MOVES + player + _NUM_CAB_AREAS*(toreg + _NUM_CAB_AREAS*fromreg))
         return actions
 
     def _register_cab_moved(self,fromreg,toreg,ofplayer):
@@ -564,7 +619,6 @@ class ElGrandeGameState(object):
         
         #find the card that's ready to be played
         activecard = self._get_current_card()
-        assert(len(activecards)==1)
         valid_action = activecard['actiontype']
         actions=[]
         if valid_action=='move':
@@ -588,14 +642,14 @@ class ElGrandeGameState(object):
             return actions
         elif valid_action=='king':
             for i in range(_NUM_REGIONS):
-                actions.append(_ACT_MOVE_KING+i)
+                actions.append(_ACT_MOVE_KINGS+i)
             return actions
         elif valid_action=='uniquescore':
             for i in range(_NUM_REGIONS):
                 actions.append(_ACT_CHOOSE_SECRETS+i)
             return actions
 
-    def _after_power_choice():
+    def _after_power_choice(self):
         #functions to determine if we should move to the next phase and/or the next player, and who that player might be
         if len(self._playersleft) > 1:
             #set current player
@@ -612,33 +666,42 @@ class ElGrandeGameState(object):
                 order = order + [player_id]
             self._cur_player=order[0]
             self._playersleft=order
-            self._turn_state[_ST_TN_PHASE]=_PHASE_NAMES['action']
+            self._turn_state[_ST_TN_PHASE]=self._get_phaseid('action')
 
-    def _after_action_step():    
+    def _after_action_step(self):    
         #functions to determine if we should move to the next phase and/or the next player, and who that player might be
-        if not self._movement_tracking.get('moving',False):
-            #if still in the process of moving caballeros then don't do anything
-            if len(self._playersleft) > 1:
-                #set current player
-                self._cur_player = self._playersleft[1]
-                #move all players up one
-                self._playersleft = self._playersleft[1:]
+        #if still in the process of moving caballeros then don't do anything
+        if self._movement_tracking.get('moving',False):
+            return
+        
+        #if we have some cabs to move, ensure we do that
+        if self._get_action_card_status()==_ST_AC_PLAY_ACTFIRST:
+            self._update_action_card_status(_ST_PHASE_CAB)
+            self._setup_caballero_placement()
+            return
+
+        #otherwise, update the queue however we need to
+        if len(self._playersleft) > 1:
+            #set current player
+            self._cur_player = self._playersleft[1]
+            #move all players up one
+            self._playersleft = self._playersleft[1:]
+        else:
+            #redo the whole queue, and move to 'scoring' phase if appropriate, next power choosing phase otherwise
+            if _SCORING_ROUND[self._turn_state[_ST_TN_ROUND]]:
+                self._turn_state[_ST_TN_PHASE]=_PHASE_NAMES['scoring']
             else:
-                #redo the whole queue, and move to 'scoring' phase if appropriate, next power choosing phase otherwise
-                if _SCORING_ROUND[self._turn_state[_ST_TN_ROUND]]:
-                    self._turn_state[_ST_TN_PHASE]=_PHASE_NAMES['scoring']
-                else:
-                    powcards = {i:self._pcard_state[i] for i in range(_NUM_POWER_CARDS) if self._pcard_state[i]>0} 
-                    start_player = int(np.log2(powcards[0]))
-                    self._cur_player = start_player
-                    order = [start_player]
-                    for i in range(1,self._num_players):
-                        order = order +[(start_player+i) % self._num_players]
-                    self._playersleft = order
-                    self._turn_state[_ST_TN_PHASE]=_PHASE_NAMES['power']
-                    self._turn_state[_ST_TN_ROUND]+=1
-                    
-    def _after_score_step():
+                powcards = {i:self._pcard_state[i] for i in range(_NUM_POWER_CARDS) if self._pcard_state[i]>0} 
+                start_player = int(np.log2(powcards[0]))
+                self._cur_player = start_player
+                order = [start_player]
+                for i in range(1,self._num_players):
+                    order = order +[(start_player+i) % self._num_players]
+                self._playersleft = order
+                self._turn_state[_ST_TN_PHASE]=_PHASE_NAMES['power']
+                self._turn_state[_ST_TN_ROUND]+=1
+                
+    def _after_score_step(self):
         new_scores = self._score_all_regions()
         if self._turn_state[_ST_TN_ROUND]==_MAX_TURNS:
             #win points normalised between 0 and 1
@@ -672,27 +735,25 @@ class ElGrandeGameState(object):
             actions = []
             if _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='start':
                 actions.append(_ACT_DEAL)
-                return actions
             elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='power':
-                for i in range(_NUM_POWER_CARDS):
-                    actions.append(_ACT_POWERS+i)
-                return actions
+                cards = self._available_powers()
+                actions = actions + [c+_ACT_POWERS for c in cards]
             elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='action':
-                for i in range(_NUM_ACTION_CARDS):
-                    actions.append(_ACT_CARDS+i)
-                return actions
+                cards = [c for c in range(_NUM_ACTION_CARDS) if self._acard_state[c]==_ST_AC_PLAY_READY]
+                actions = actions + [c +_ACT_CARDS for c in cards]
             elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='actionchoose':
                 actions.append(_ACT_DECIDE_CAB)
                 actions.append(_ACT_DECIDE_ACT)
             elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='actioncard':
-                actions.append(self._set_valid_actions_from_card())
+                actions = actions + self._set_valid_actions_from_card()
             elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='actioncab':
-                actions.append(self._set_valid_cab_movements())
+                actions = actions + self._set_valid_cab_movements()
             else:
                 #must be score - choose a secret region
                 for i in range(_NUM_REGIONS):
                     actions.append(_ACT_CHOOSE_SECRETS+i)
-                return actions
+            
+            return actions
 
     def legal_actions_mask(self, player=None):
         """Get a list of legal actions.
@@ -721,10 +782,15 @@ class ElGrandeGameState(object):
         # _ACT_DECIDE_CAB, _ACT_DECIDE_ACT = _ACT_DECIDE_CAB + 1, _ACT_CHOOSE_SECRETS (+ _NUM_REGIONS), _ACT_MOVE_GRANDES (+ _NUM_REGIONS), 
         # _ACT_MOVE_KINGS (+ _NUM_REGIONS), _ACT_CAB_MOVES (+ _NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS)
 
+        #don't apply an illegal action
+        if not action in self.legal_actions():
+            return
+
         if action==_ACT_DEAL:
             self._deal_all_decks()
         elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
-            self._assign_card(action - _ACT_CARDS + 1)
+            self._acard_state[action - _ACT_CARDS] = _ST_AC_PLAY_INIT
+            self._turn_state[_ST_TN_PHASE] = _ST_PHASE_CHOOSE
         elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWER_CARDS:
             self._assign_power(action - _ACT_POWERS)
             self._after_power_choice() #find next player to pick power card, or move on one phase
@@ -732,11 +798,11 @@ class ElGrandeGameState(object):
             self._retrieve_power(action - _ACT_RETRIEVE_POWERS)
             self._after_action_step() #check if we need to move to next player, or next step, or keep playing actions
         elif action == _ACT_DECIDE_CAB:
-            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_PHASE]=self._get_phaseid(data['actioncab'])
+            self._update_action_card_status(_ST_PHASE_CAB)
             self._pack_court()
             self._setup_caballero_placement()
         elif action == _ACT_DECIDE_ACT:
-            self._state_matrix[_ST_IDX_GAMECONTROL,_ST_IDY_PHASE]=self._get_phaseid(data['actioncard'])
+            self._update_action_card_status(_ST_PHASE_CARD)
             self._pack_court()
             self._setup_action()
         elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + _NUM_REGIONS:
@@ -958,7 +1024,7 @@ class ElGrandeGameObserver:
     def set_from(self, state, player):
         del player
         for channel in range(_ST_IDCH):
-            chmat = (self._state_matrix >> channel)%2
+            chmat = (self._board_state >> channel)%2
             self._obs[channel,:,:]=chmat
         #TODO - check this
 
