@@ -44,7 +44,7 @@ _ST_BDY_GRANDE_KING = _ST_BDY_CABS + _MAX_PLAYERS # grande/king state (1 bit per
 _ST_BDY_SECRET = _ST_BDY_GRANDE_KING + 1 #secret region vote (1 bit per player)
 _ST_BDY_END = _ST_BDY_SECRET + _MAX_PLAYERS
 
-_ST_MASK_KING = _MAX_PLAYERS+1 #in the king/grande mask, king is at end
+_ST_MASK_KING = _MAX_PLAYERS #in the king/grande mask, king is at end
 
 #Action card state - int indicators per-card - unplayed, done, playable(initial,after cabsfirst,after actfirst)
 _ST_AC_UNPLAYED = 0
@@ -93,8 +93,8 @@ _ACT_MOVE_GRANDES = _ACT_CHOOSE_SECRETS + _NUM_REGIONS
 _ACT_MOVE_KINGS = _ACT_MOVE_GRANDES + _NUM_REGIONS
 _ACT_MOVE_SCOREBOARDS = _ACT_MOVE_KINGS + _NUM_REGIONS
 _ACT_CAB_MOVES = _ACT_MOVE_SCOREBOARDS + (_NUM_SCOREBOARDS*_NUM_REGIONS)
-_ACT_END = _ACT_CAB_MOVES + (_NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS) #combos of moving a cab from region, to region, of player
-
+_ACT_SKIP = _ACT_CAB_MOVES + (_NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS) #combos of moving a cab from region, to region, of player
+_ACT_END = _ACT_SKIP + 1 
 
 class ElGrandeGameState(object):
     """El Grande Game in open_spiel format
@@ -462,14 +462,14 @@ class ElGrandeGameState(object):
     def _init_move_info(self):
         self._movement_tracking = {'from':[],'to':[],'cabs':[],'patterns':[],'queue':[],'player':0,'lockfrom':False,'lockto':False,'moving':False}
         
-    def _setup_action(self,alt_action=-1):
+    def _setup_action(self,alt_action=0):
         #do an instant action, or set up info to enable multi-step actions
         
         self._init_move_info() #wipe out previous info on where caballeros were/were not allowed to move
         card = self._get_current_card()
         action_type = card['actiontype']
         card_details = card['details']
-        if alt_action>=0:
+        if alt_action>0:
             action_type = card_details[alt_action]['type']
             card_details = card_details[alt_action]['details']
                 
@@ -593,8 +593,9 @@ class ElGrandeGameState(object):
                 for player in players:
                     if self._board_state[fromreg,player] >0:
                         #there is a caballero here of the correct colour, so this move action is okay
-                        actions.append(_ACT_CAB_MOVES + player + _NUM_CAB_AREAS*(toreg + _NUM_CAB_AREAS*fromreg))
-        return actions
+                        actions.append(_ACT_CAB_MOVES + player + _MAX_PLAYERS*(toreg + _NUM_CAB_AREAS*fromreg))
+        
+        return sorted(actions)
 
     def _register_cab_moved(self,fromreg,toreg,ofplayer):
         for pattern in self._movement_tracking['patterns']:
@@ -689,7 +690,7 @@ class ElGrandeGameState(object):
         else:
             #redo the whole queue, and move to 'scoring' phase if appropriate, next power choosing phase otherwise
             if _SCORING_ROUND[self._turn_state[_ST_TN_ROUND]]:
-                self._turn_state[_ST_TN_PHASE]=_PHASE_NAMES['scoring']
+                self._turn_state[_ST_TN_PHASE]=_ST_PHASE_SCORE
             else:
                 powcards = {i:self._pcard_state[i] for i in range(_NUM_POWER_CARDS) if self._pcard_state[i]>0} 
                 start_player = int(np.log2(powcards[0]))
@@ -698,7 +699,7 @@ class ElGrandeGameState(object):
                 for i in range(1,self._num_players):
                     order = order +[(start_player+i) % self._num_players]
                 self._playersleft = order
-                self._turn_state[_ST_TN_PHASE]=_PHASE_NAMES['power']
+                self._turn_state[_ST_TN_PHASE]=_ST_PHASE_POWER
                 self._turn_state[_ST_TN_ROUND]+=1
                 
     def _after_score_step(self):
@@ -744,10 +745,11 @@ class ElGrandeGameState(object):
             elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='actionchoose':
                 actions.append(_ACT_DECIDE_CAB)
                 actions.append(_ACT_DECIDE_ACT)
+                #TODO - circumstances under which _ACT_DECIDE_ALT will appear
             elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='actioncard':
-                actions = actions + self._set_valid_actions_from_card()
+                actions = actions + self._set_valid_actions_from_card() + [_ACT_SKIP]
             elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='actioncab':
-                actions = actions + self._set_valid_cab_movements()
+                actions = actions + self._set_valid_cab_movements() + [_ACT_SKIP]
             else:
                 #must be score - choose a secret region
                 for i in range(_NUM_REGIONS):
@@ -780,7 +782,7 @@ class ElGrandeGameState(object):
 
         #possible actions: _ACT_DEAL, _ACT_CARDS (+ _NUM_ACTION_CARDS), _ACT_POWERS (+ _NUM_POWER_CARDS), _ACT_RETRIEVE_POWERS (+ _NUM_POWER_CARDS), 
         # _ACT_DECIDE_CAB, _ACT_DECIDE_ACT = _ACT_DECIDE_CAB + 1, _ACT_CHOOSE_SECRETS (+ _NUM_REGIONS), _ACT_MOVE_GRANDES (+ _NUM_REGIONS), 
-        # _ACT_MOVE_KINGS (+ _NUM_REGIONS), _ACT_CAB_MOVES (+ _NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS)
+        # _ACT_MOVE_KINGS (+ _NUM_REGIONS), _ACT_CAB_MOVES (+ _NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS), _ACT_SKIP
 
         #don't apply an illegal action
         if not action in self.legal_actions():
@@ -801,10 +803,10 @@ class ElGrandeGameState(object):
             self._update_action_card_status(_ST_PHASE_CAB)
             self._pack_court()
             self._setup_caballero_placement()
-        elif action == _ACT_DECIDE_ACT:
+        elif action in [_ACT_DECIDE_ACT,_ACT_DECIDE_ACT_ALT]:
             self._update_action_card_status(_ST_PHASE_CARD)
             self._pack_court()
-            self._setup_action()
+            self._setup_action(1 if _ACT_DECIDE_ACT_ALT else 0)
         elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + _NUM_REGIONS:
             self._set_secret_region(action - _ACT_CHOOSE_SECRETS)
             if self._phase_name()=='scoring':
@@ -818,6 +820,10 @@ class ElGrandeGameState(object):
         elif action >= _ACT_MOVE_KINGS and action < _ACT_MOVE_KINGS + _NUM_REGIONS:
             self._move_king(action - _ACT_MOVE_KINGS)
             self._after_action_step() 
+        elif action == _ACT_SKIP:
+            #whatever we're skipping, the move info goes
+            self._init_move_info()
+            self._after_action_step()
         else:
             #moving a caballero fromregion, toregion, ofplayer
             fromRegion = (action- _ACT_CAB_MOVES)//(_NUM_CAB_AREAS * _MAX_PLAYERS)
@@ -845,12 +851,16 @@ class ElGrandeGameState(object):
             actionString = "Decide Caballeros First"
         elif action == _ACT_DECIDE_ACT:
             actionString = "Decide Action First"
+        elif action == _ACT_DECIDE_ACT_ALT:
+            actionString = "Decide Alternate Action First"
         elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + _NUM_REGIONS:
             actionString = "Choose "+ self._regions[action - _ACT_CHOOSE_SECRETS]
         elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + _NUM_REGIONS:
             actionString = "Grande to "+ self._regions[action - _ACT_MOVE_GRANDES]
         elif action >= _ACT_MOVE_KINGS and action < _ACT_MOVE_KINGS + _NUM_REGIONS:
             actionString = "King to "+ self._regions[action - _ACT_MOVE_KINGS]
+        elif action == _ACT_SKIP
+            actionString = "Skip this step"
         else:
             #moving a caballero fromregion, toregion, ofplayer
             fromRegion = (action- _ACT_CAB_MOVES)//(_NUM_CAB_AREAS * _MAX_PLAYERS)
