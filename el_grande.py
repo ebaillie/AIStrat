@@ -195,7 +195,10 @@ class ElGrandeGameState(object):
         #translate to indexing by id, with links to guid and points
         boards=jsonData['Scoreboards']
         self._scoreboards = [{'guid':b,'points':boards[b]['points']} for b in boards]
-            
+        #start info, for game that starts from this code, not a fed-in state
+        self._playersleft = [self._get_pid(p) for p in self._players]
+        self._playersdone = []
+        #TODO - random allocate players to region, put king,cabs and grandes down 
 
     #turn all relevant state info from DB format into game format
     def _load_game_state(self,jsonData):
@@ -266,9 +269,11 @@ class ElGrandeGameState(object):
                 self._acard_state[card_id-1]=_ST_AC_DONE
 
         #'done' cards dealt in this round which were played by done players
-        for player in data['playersdone']:
-            card_id = self._get_cid(data['actioncards'][player])
-            self._acard_state[card_id-1]=_ST_AC_DONE
+        if data['phase']=='action':
+            for player in data['playersdone']:
+                card_id = self._get_cid(data['actioncards'][player])
+                self._acard_state[card_id-1]=_ST_AC_DONE
+
     def _state_add_turn_info(self,data):
         #power cards
         if len(data['powercards'])>0:
@@ -318,13 +323,13 @@ class ElGrandeGameState(object):
     def _deal_all_decks(self):
         #set current cards as done
         self._acard_state = [_ST_AC_UNPLAYED if s==_ST_AC_UNPLAYED else _ST_AC_DONE for s in self._acard_state]
+        #final card is always set ready after dealing (Deck5)
+        self._acard_state[-1] = _ST_AC_UNPLAYED
         for deck in self._decktrack:
             card_guids = [k for k in self._decktrack[deck] if self._acard_state[self._get_cid(k)-1]==_ST_AC_UNPLAYED]
             next_card_guid = random.choice(card_guids)
             self._acard_state[self._get_cid(next_card_guid)-1]=_ST_AC_PLAY_READY
         self._turn_state[_ST_TN_PHASE]=self._get_phaseid('power')
-        #final card is always set ready after dealing (Deck5)
-        self._acard_state[-1] = _ST_AC_UNPLAYED
 
     def _assign_power(self,power_id):
         #power_id is array position 0..12
@@ -508,6 +513,8 @@ class ElGrandeGameState(object):
             multi_step=True
         elif action_type == 'move':
             self._do_caballero_move_info(card_details)
+        elif action_type == 'score':
+            self._special_score(card_details)
 
     def _do_caballero_move_info(self,card_details):  
         #make movable caballeros interactable
@@ -518,10 +525,10 @@ class ElGrandeGameState(object):
         self._movement_tracking['player']=self._cur_player
         for v in ['from','to']:
             if card_details[v]['region'] in ['court','province']:
-                self._movement_tracking[v]=[card_details[v]['region']]
+                self._movement_tracking[v]=[self._get_rid(card_details[v]['region'])]
             elif card_details[v]['region']=='selfchoose':
                 #current King's region shouldn't be in the list
-                the_regions=[i for i in range(_NUM_REGIONS) if self._board_state[i,_ST_IDY_KING]==0]
+                the_regions=[i for i in range(_NUM_REGIONS) if not self._region_has_king(i)]
                 if v=='to':
                     the_regions = the_regions + [_ST_BDX_CASTILLO]
                 self._movement_tracking[v]=the_regions
@@ -617,8 +624,7 @@ class ElGrandeGameState(object):
                             else:
                                 players = [i for i in range(self._num_players) if ((i in players) or i!=mentioned_player)]
                 for player in players:
-                    fromreg_id = self._get_rid(fromreg)
-                    if self._board_state[fromreg_id,player] >0:
+                    if self._board_state[fromreg,player] >0:
                         #there is a caballero here of the correct colour, so this move action is okay
                         actions.append(_ACT_CAB_MOVES + player + _MAX_PLAYERS*(toreg + _NUM_CAB_AREAS*fromreg))
         
@@ -852,7 +858,7 @@ class ElGrandeGameState(object):
             self._setup_action(1 if action==_ACT_DECIDE_ACT_ALT else 0)
         elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + _NUM_REGIONS:
             self._set_secret_region(action - _ACT_CHOOSE_SECRETS)
-            if self._phase_name()=='scoring':
+            if self._turn_state[_ST_TN_PHASE]==_ST_PHASE_SCORE:
                 self._after_score_step()
             else:
                 #if we weren't chosing for cab movement in scoring, we were choosing for a card action
@@ -938,7 +944,7 @@ class ElGrandeGameState(object):
         return self.returns()[player]
 
     def is_chance_node(self):
-        if self._phase_name()=='start':
+        if self._turn_state[_ST_TN_PHASE]==_ST_PHASE_START:
             return True
         else:
             return False
