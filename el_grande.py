@@ -142,7 +142,7 @@ class ElGrandeGameState(object):
         ccard = [c for c in range(_NUM_ACTION_CARDS) if self._acard_state[c] not in [_ST_AC_UNPLAYED,_ST_AC_DONE,_ST_AC_PLAY_READY]]
         assert(len(ccard)<=1) #can have at most one card in the playable states
         if len(ccard)==0:
-            return nil
+            return None
         else:
             return self._cards[self._cardtrack[ccard[0]]]
 
@@ -170,6 +170,7 @@ class ElGrandeGameState(object):
     def _load_game_info(self,jsonData):
         self._regiondata = jsonData["Regions"]
         self._regions = [r for r in self._regiondata.keys() if r!='Castillo']+['Castillo','court','province']
+        self._init_rewards()
         self._init_neighbors()
         self._players = jsonData["Players"]
         self._num_players = len(self._players)
@@ -191,7 +192,9 @@ class ElGrandeGameState(object):
                 self._cardtrack=self._cardtrack+[cardguid]
         assert(len(self._cards.keys())==_NUM_ACTION_CARDS)
         #mobile scoreboard data, indexed by guid, containing points
-        self._scoreboards = jsonData['Scoreboards']
+        #translate to indexing by id, with links to guid and points
+        boards=jsonData['Scoreboards']
+        self._scoreboards = [{'guid':b,'points':boards[b]['points']} for b in boards]
             
 
     #turn all relevant state info from DB format into game format
@@ -233,7 +236,7 @@ class ElGrandeGameState(object):
         #action cards, sorted by deck
         if len(cards)>0:
             for deck in cards.keys():
-                card_id = self._get_cid(cards[deck],True)
+                card_id = self._get_cid(cards[deck])
                 #Differentiate between init, actdone and cabdone from player info
                 #TODO - ensure this is consistent 
                 actdone=False
@@ -246,18 +249,26 @@ class ElGrandeGameState(object):
                 if actdone and cabsdone:
                     self._acard_state[card_id-1]=_ST_AC_DONE
                 elif actdone and not cabsdone:
-                    self._acard_state[card_id-1]=_ST_AC_PLAY_ACTSECOND
-                elif (not actdone) and cabsdone:
                     self._acard_state[card_id-1]=_ST_AC_PLAY_CABSECOND
+                    self._turn_state[_ST_TN_PHASE] = _ST_PHASE_CAB
+                elif (not actdone) and cabsdone:
+                    self._acard_state[card_id-1]=_ST_AC_PLAY_ACTSECOND
+                    self._turn_state[_ST_TN_PHASE] = _ST_PHASE_CARD
                 else:
                     self._acard_state[card_id-1]=_ST_AC_PLAY_READY
+                    self._turn_state[_ST_TN_PHASE] = _ST_PHASE_CHOOSE
                     
 
+        #'done' cards dealt in previous rounds
         for deck in pastcards.keys():
             for card in pastcards[deck]:
-                card_id = self._get_cid(card,False)
+                card_id = self._get_cid(card)
                 self._acard_state[card_id-1]=_ST_AC_DONE
-            
+
+        #'done' cards dealt in this round which were played by done players
+        for player in data['playersdone']:
+            card_id = self._get_cid(data['actioncards'][player])
+            self._acard_state[card_id-1]=_ST_AC_DONE
     def _state_add_turn_info(self,data):
         #power cards
         if len(data['powercards'])>0:
@@ -296,7 +307,12 @@ class ElGrandeGameState(object):
         for region_id in range(_NUM_REGIONS):
             neighbors[region_id]=[self._get_rid(r) for r in self._regiondata[self._regions[region_id]]['neighbors']]
         self._neighbors = neighbors
-                 
+        
+    def _init_rewards(self):
+        #from initial game info, not taking into account any scoreboard movement
+        self._rewards = [self._regiondata[self._regions[r]]['points'][0] for r in range(_NUM_EXT_REGIONS)]
+    
+
     #functions for doing actions
     
     def _deal_all_decks(self):
@@ -307,7 +323,9 @@ class ElGrandeGameState(object):
             next_card_guid = random.choice(card_guids)
             self._acard_state[self._get_cid(next_card_guid)-1]=_ST_AC_PLAY_READY
         self._turn_state[_ST_TN_PHASE]=self._get_phaseid('power')
-        
+        #final card is always set ready after dealing (Deck5)
+        self._acard_state[-1] = _ST_AC_UNPLAYED
+
     def _assign_power(self,power_id):
         #power_id is array position 0..12
         self._pcard_state[power_id] |= pow(2,self._cur_player)
@@ -343,13 +361,22 @@ class ElGrandeGameState(object):
         self._board_state[:_NUM_REGIONS,_ST_BDY_GRANDE_KING] &= np.full(_NUM_REGIONS,mask)
         self._board_state[region_id,_ST_BDY_GRANDE_KING] |= pow(2,_ST_MASK_KING)
 
+    def _move_scoreboard(self,board_id,region_id):
+        points = self._scoreboards[board_id]['points']
+        self._rewards[region_id]=points
+        self._scoreboards[board_id]['region']=region_id
+        #TODO - keep consistent when scoreboard moved from another region
+
     def _move_one_cab(self,from_region, to_region, of_player):
         assert(self._board_state[from_region,of_player]>0)
         self._board_state[from_region,of_player] = self._board_state[from_region,of_player] - 1
         self._board_state[to_region,of_player] = self._board_state[to_region,of_player] + 1
         #ensure that a matching pattern keeps track of what moves are now allowable
         self._register_cab_moved(from_region,to_region,of_player)
-        
+       
+        #check if the patterns are all filled, and if so, set moving to false
+        self._check_move_patterns_filled()
+         
     def _region_str(self,region_id):
         retstr = "|".join([str(i) for i in self._board_state[region_id,_ST_BDY_CABS:(_ST_BDY_CABS + self._num_players)]])
         grandes = [str(i) for i in range(self._num_players) if self._region_has_grande(region_id,i)]
@@ -453,12 +480,12 @@ class ElGrandeGameState(object):
         region_king = [b for b in range (_NUM_REGIONS) if self._board_state[b,_ST_BDY_GRANDE_KING] & pow(2,_ST_MASK_KING) != 0][0]
         self._movement_tracking['to']=self._neighbors[region_king]+[_ST_BDX_CASTILLO]
         self._movement_tracking['lockto']=False
-        self._moving = True
+        self._movement_tracking['moving'] = True
         card = self._get_current_card()
         n_cabs = min(int(card["name"][4]),self._board_state[_ST_BDX_PROVINCE,self._cur_player])
         pattern = {'player':self._cur_player,'allowed':True,'max':n_cabs,'min':0}
         self._movement_tracking['patterns']=[pattern]
-    
+         
     def _init_move_info(self):
         self._movement_tracking = {'from':[],'to':[],'cabs':[],'patterns':[],'queue':[],'player':0,'lockfrom':False,'lockto':False,'moving':False}
         
@@ -468,7 +495,7 @@ class ElGrandeGameState(object):
         self._init_move_info() #wipe out previous info on where caballeros were/were not allowed to move
         card = self._get_current_card()
         action_type = card['actiontype']
-        card_details = card['details']
+        card_details = card.get('details',[])
         if alt_action>0:
             action_type = card_details[alt_action]['type']
             card_details = card_details[alt_action]['details']
@@ -480,13 +507,13 @@ class ElGrandeGameState(object):
             self._add_caballero_move_info(card_details[1])
             multi_step=True
         elif action_type == 'move':
-            self._do_caballero_move_info(card_details[1])
+            self._do_caballero_move_info(card_details)
 
     def _do_caballero_move_info(self,card_details):  
         #make movable caballeros interactable
         #'from' values are court, or region of your choice
         #self._movement_tracking = {['from']={},['to']={},['patterns']={},
-        #                     ['player']=nil,['lockfrom']=false,['lockto']=false,['moving']=false}
+        #                     ['player']=None,['lockfrom']=false,['lockto']=false,['moving']=false}
 
         self._movement_tracking['player']=self._cur_player
         for v in ['from','to']:
@@ -525,9 +552,8 @@ class ElGrandeGameState(object):
             pattern['min']=pattern['max']
         
         #there may be a condition on choice of 'from' region - check it
-        if card_details['from']['condition'] != None:
+        if card_details['from'].get('condition',None) != None:
             self._movement_tracking['fromcondition']=int(card_details['from']['condition'])
-        end
         self._movement_tracking['patterns']=[pattern]   
 
         #anything that can simply be done, just do it
@@ -591,7 +617,8 @@ class ElGrandeGameState(object):
                             else:
                                 players = [i for i in range(self._num_players) if ((i in players) or i!=mentioned_player)]
                 for player in players:
-                    if self._board_state[fromreg,player] >0:
+                    fromreg_id = self._get_rid(fromreg)
+                    if self._board_state[fromreg_id,player] >0:
                         #there is a caballero here of the correct colour, so this move action is okay
                         actions.append(_ACT_CAB_MOVES + player + _MAX_PLAYERS*(toreg + _NUM_CAB_AREAS*fromreg))
         
@@ -602,7 +629,14 @@ class ElGrandeGameState(object):
             if self._matched_pattern(ofplayer,pattern):
                 pattern['cabs']=pattern.get('cabs',0)+1
                 return
-            
+
+    def _check_move_patterns_filled(self):
+        for pattern in self._movement_tracking['patterns']:
+            if pattern['cabs']<pattern['max']:
+                return
+        #if we didn't find any free patterns, set moving false
+        self._movement_tracking['moving']=False
+        
     def _matched_pattern(self,player,pattern):
         if pattern.get('player',-1) == -1:
             return True #found an unrestricted pattern
@@ -680,8 +714,15 @@ class ElGrandeGameState(object):
             self._update_action_card_status(_ST_PHASE_CAB)
             self._setup_caballero_placement()
             return
+        
+        #if we were moving cabs and now have to do the action card, do that
+        if self._get_action_card_status()==_ST_AC_PLAY_CABFIRST:
+            self._update_action_card_status(_ST_PHASE_CARD)
+            self._setup_action() #TODO - need step here for alt chooser
+            return
 
-        #otherwise, update the queue however we need to
+        #otherwise we're done, update the queue however we need to
+        self._update_action_card_status(_ST_PHASE_ACTION)
         if len(self._playersleft) > 1:
             #set current player
             self._cur_player = self._playersleft[1]
@@ -701,6 +742,8 @@ class ElGrandeGameState(object):
                 self._playersleft = order
                 self._turn_state[_ST_TN_PHASE]=_ST_PHASE_POWER
                 self._turn_state[_ST_TN_ROUND]+=1
+                self._pcard_state = np.full(_NUM_POWER_CARDS,0)
+                self._deal_all_decks()
                 
     def _after_score_step(self):
         new_scores = self._score_all_regions()
@@ -806,7 +849,7 @@ class ElGrandeGameState(object):
         elif action in [_ACT_DECIDE_ACT,_ACT_DECIDE_ACT_ALT]:
             self._update_action_card_status(_ST_PHASE_CARD)
             self._pack_court()
-            self._setup_action(1 if _ACT_DECIDE_ACT_ALT else 0)
+            self._setup_action(1 if action==_ACT_DECIDE_ACT_ALT else 0)
         elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + _NUM_REGIONS:
             self._set_secret_region(action - _ACT_CHOOSE_SECRETS)
             if self._phase_name()=='scoring':
@@ -819,6 +862,11 @@ class ElGrandeGameState(object):
             self._after_action_step() 
         elif action >= _ACT_MOVE_KINGS and action < _ACT_MOVE_KINGS + _NUM_REGIONS:
             self._move_king(action - _ACT_MOVE_KINGS)
+            self._after_action_step() 
+        elif action >= _ACT_MOVE_SCOREBOARDS and action < _ACT_MOVE_SCOREBOARDS + (_NUM_SCOREBOARDS*_NUM_REGIONS):
+            board = (action - _ACT_MOVE_SCOREBOARDS)//_NUM_REGIONS
+            region = (action - _ACT_MOVE_SCOREBOARDS)%_NUM_REGIONS
+            self._move_scoreboard(board,region)
             self._after_action_step() 
         elif action == _ACT_SKIP:
             #whatever we're skipping, the move info goes
@@ -859,7 +907,11 @@ class ElGrandeGameState(object):
             actionString = "Grande to "+ self._regions[action - _ACT_MOVE_GRANDES]
         elif action >= _ACT_MOVE_KINGS and action < _ACT_MOVE_KINGS + _NUM_REGIONS:
             actionString = "King to "+ self._regions[action - _ACT_MOVE_KINGS]
-        elif action == _ACT_SKIP
+        elif action >= _ACT_MOVE_SCOREBOARDS and action < _ACT_MOVE_SCOREBOARDS + (_NUM_SCOREBOARDS*_NUM_REGIONS):
+            board = (action - _ACT_MOVE_SCOREBOARDS)//_NUM_REGIONS
+            region = (action - _ACT_MOVE_SCOREBOARDS)%_NUM_REGIONS
+            actionString = "Move scoreboard "+ str(self._scoreboards[board]['points']) +" to " + self._regions[region]   
+        elif action == _ACT_SKIP:
             actionString = "Skip this step"
         else:
             #moving a caballero fromregion, toregion, ofplayer
