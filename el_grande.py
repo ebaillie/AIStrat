@@ -425,9 +425,69 @@ class ElGrandeGameState(object):
         return "|".join(names)
     
     def _turn_info_str(self):
-        return "Round "+ str(self._turn_state[_ST_TN_ROUND]) + " " + _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]] + "(player "+str(self._cur_player)+")"                    
-    def _score_one_region(self,region):
-        assert(region>0 and region<=_NUM_EXT_REGIONS) 
+        return "Round "+ str(self._turn_state[_ST_TN_ROUND]) + " " + _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]] + "(player "+str(self._cur_player)+")"     
+    
+    
+    def _special_score(details):
+        final_scores=np.full(self._num_players,0)
+        choice_step=False
+        if details['region']=='fours':
+            for i in range(_NUM_EXT_REGIONS): 
+                if self._rewards[i][0]==4:
+                    final_scores = final_scores + self._score_one_region(i)
+        elif details['region']=='fives':
+            for i in range(_NUM_EXT_REGIONS):
+                if self._rewards[i][0]==5:
+                    final_scores = final_scores + self._score_one_region(i)
+        elif details['region']=='sixsevens':
+            for i in range(_NUM_EXT_REGIONS):
+                if self._rewards[i][0]==6 or self._rewards[i][0]==7:
+                    final_scores = final_scores + self._score_one_region(i)
+        elif details['region']=='castillo':
+                final_scores = final_scores + self._score_one_region(i)
+        elif details['region']=='locab':
+            loregions=[]
+            currentlow=100
+            for i in range(_NUM_EXT_REGIONS):
+                this_count=sum(self._board_state[i,:self._num_players])
+                if this_count<currentlow and this_count>0:
+                    currentlow=this_count
+                    loregions=[i]
+                elif this_count==currentlow
+                    loregions = loregions + [i]
+            for i in loregions:
+                final_scores = final_scores + self._score_one_region(i)
+        elif details['region']=='hicab':
+            hiregions=[]
+            currenthigh=0
+            for i in range(_NUM_EXT_REGIONS):
+                this_count=sum(self._board_state[i,:self._num_players])
+                if this_count>currenthigh:
+                    currenthigh=this_count
+                    hiregions=[i]
+                elif this_count==currenthigh
+                    hiregions = hiregions + [i]
+            for i in hiregions:
+                final_scores = final_scores + self._score_one_region(i)
+        elif details['region']=='selfchoose':
+            #choose a region to score - see if we did this already
+            regions = [self._board_state[i,_ST_BDY_SECRET] for i in range(_NUM_REGIONS) if (self._board_state[i,_ST_BDY_SECRET] & pow(2,self._cur_player) > 0)]
+            assert(len(regions)<=1)
+            if len(regions)==0:
+                choice_step=True
+            else:
+                final_scores = final_scores + self._score_one_region(regions[0])
+        else:
+            #last possibility is the one where we just score the top in all regions
+            for i in range(_NUM_EXT_REGIONS):
+                final_scores = final_scores + self._score_one_region(i,True)
+                
+        if not choice_step:
+            self._turn_state[_ST_TN_SCORES:_ST_TN_SCORES+self._num_players]+=final_scores
+            self._after_action_step()
+
+    def _score_one_region(self,region,top_only=False):
+        assert(region>=0 and region<=_NUM_EXT_REGIONS) 
         cab_counts = self._board_state[_ST_BDX_REGIONS+region,_ST_BDY_CABS : (_ST_BDY_CABS+self._num_players) ]
     
         #rank and score the counts
@@ -454,7 +514,8 @@ class ElGrandeGameState(object):
         final_scores=np.full(self._num_players,0)
         for k in ranks.keys():
             if ranks[k]>0 and ranks[k]<=3:
-                final_scores[k]=self._rewards[region-1][ranks[k]-1]
+                if ranks[k]==1 or (not top_only):
+                    final_scores[k]=self._rewards[region-1][ranks[k]-1]
             if ranks[k]==1:
                 if self._has_grande(region,k):
                     final_scores[k]=final_scores[k]+2
