@@ -428,7 +428,7 @@ class ElGrandeGameState(object):
         return "Round "+ str(self._turn_state[_ST_TN_ROUND]) + " " + _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]] + "(player "+str(self._cur_player)+")"     
     
     
-    def _special_score(details):
+    def _special_score(self,details):
         final_scores=np.full(self._num_players,0)
         choice_step=False
         if details['region']=='fours':
@@ -453,7 +453,7 @@ class ElGrandeGameState(object):
                 if this_count<currentlow and this_count>0:
                     currentlow=this_count
                     loregions=[i]
-                elif this_count==currentlow
+                elif this_count==currentlow:
                     loregions = loregions + [i]
             for i in loregions:
                 final_scores = final_scores + self._score_one_region(i)
@@ -465,7 +465,7 @@ class ElGrandeGameState(object):
                 if this_count>currenthigh:
                     currenthigh=this_count
                     hiregions=[i]
-                elif this_count==currenthigh
+                elif this_count==currenthigh:
                     hiregions = hiregions + [i]
             for i in hiregions:
                 final_scores = final_scores + self._score_one_region(i)
@@ -517,9 +517,9 @@ class ElGrandeGameState(object):
                 if ranks[k]==1 or (not top_only):
                     final_scores[k]=self._rewards[region-1][ranks[k]-1]
             if ranks[k]==1:
-                if self._has_grande(region,k):
+                if self._region_has_grande(region,k):
                     final_scores[k]=final_scores[k]+2
-                if self._has_king(region):
+                if self._region_has_king(region):
                     final_scores[k]=final_scores[k]+2
         #print("rewards for region "+str(region))
         #print(final_scores)
@@ -577,6 +577,15 @@ class ElGrandeGameState(object):
         elif action_type == 'score':
             self._special_score(card_details)
 
+    def _apply_secret_choice(self):
+        #figure out what action required a secret choice, and complete it
+        card = self._get_current_card()
+        action_type = card['actiontype']
+        if action_type == 'score':
+            self._special_score(card['details'])
+        #TODO - more card types
+
+
     def _do_caballero_move_info(self,card_details):  
         #make movable caballeros interactable
         #'from' values are court, or region of your choice
@@ -595,7 +604,7 @@ class ElGrandeGameState(object):
                 self._movement_tracking[v]=the_regions
             else:
                 #placeholder for some sort of owner choice
-                self._movement_tracking[v]=[details[v]['region']]
+                self._movement_tracking[v]=[card_details[v]['region']]
 
             if card_details[v]['splitopt']=="all":
                 self._movement_tracking['lock'+v]=True 
@@ -635,7 +644,7 @@ class ElGrandeGameState(object):
                 sendCount= self._board_state[fromreg[0],_ST_BDY_CABS+self._cur_player] #figure out how much the 'all' in 'send all' is
             for pl in range(self._num_players):
                 sendThis=True
-                if (card_details['player']=='foreign' and pl==self._cur_player) or  (details['player']=='self' and pl!=self._cur_player):
+                if (card_details['player']=='foreign' and pl==self._cur_player) or  (card_details['player']=='self' and pl!=self._cur_player):
                     sendThis=False
                 if sendThis:
                     self._board_state[fromreg[0],_ST_BDY_CABS+self._cur_player] -= sendCount
@@ -644,6 +653,8 @@ class ElGrandeGameState(object):
             #null-out movement info, since we've done the move
             #TODO - in _acard_state set this card from INIT to ACTFIRST or CABFIRST to DONE
             self._init_move_info()
+        else:
+            self._movement_tracking['moving']=True
     
         
     def _add_caballero_move_info(self,card_details):         
@@ -731,8 +742,8 @@ class ElGrandeGameState(object):
                 actions.append(_ACT_CHOOSE_SECRETS+i)
             return actions
         elif valid_action=='power':
-            for i in range(_NUM_POWER_CARDS):
-                actions.append(_ACT_RETRIEVE_POWERS+i)
+            power_acts = [(_ACT_RETRIEVE_POWERS + i) for i in range(_NUM_POWER_CARDS) if self._past_pcard_state[i] & pow(2,self._cur_player) > 0]
+            actions = actions + power_acts
             return actions
         elif valid_action=='grande':
             for i in range(_NUM_REGIONS):
@@ -801,7 +812,8 @@ class ElGrandeGameState(object):
                 self._turn_state[_ST_TN_PHASE]=_ST_PHASE_SCORE
             else:
                 powcards = {i:self._pcard_state[i] for i in range(_NUM_POWER_CARDS) if self._pcard_state[i]>0} 
-                start_player = int(np.log2(powcards[0]))
+                lowest = sorted(powcards.keys())[0]
+                start_player = int(np.log2(powcards[lowest]))
                 self._cur_player = start_player
                 order = [start_player]
                 for i in range(1,self._num_players):
@@ -923,6 +935,7 @@ class ElGrandeGameState(object):
                 self._after_score_step()
             else:
                 #if we weren't chosing for cab movement in scoring, we were choosing for a card action
+                self._apply_secret_choice()
                 self._after_action_step() 
         elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + _NUM_REGIONS:
             self._move_grande(action - _ACT_MOVE_GRANDES)
