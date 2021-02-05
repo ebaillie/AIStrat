@@ -81,8 +81,7 @@ _ST_IDCH = 32 #highest number in the matrix should be 2^5
 
 #list of action numbers from 0 up
 
-_ACT_DEAL = 0
-_ACT_CARDS = 1 #start of 'select a card' actions
+_ACT_CARDS = 0 #start of 'select a card' actions
 _ACT_POWERS = _ACT_CARDS + _NUM_ACTION_CARDS #select power cards
 _ACT_RETRIEVE_POWERS = _ACT_POWERS + _NUM_POWER_CARDS #get back an old power card
 _ACT_DECIDE_CAB = _ACT_RETRIEVE_POWERS + _NUM_POWER_CARDS #decide to place cabs first
@@ -107,6 +106,7 @@ class ElGrandeGameState(object):
         self._is_terminal = False
         self._history = []
         self._winner = False
+        self._dealing = True
         self._board_state = np.full((_ST_BDX_END,_ST_BDY_END),0)
         self._acard_state = np.full(_NUM_ACTION_CARDS,0)
         self._pcard_state = np.full(_NUM_POWER_CARDS,0)
@@ -296,6 +296,8 @@ class ElGrandeGameState(object):
         #phase
         self._turn_state[_ST_TN_PHASE]=self._get_phaseid(data['phase'])
 
+        #'dealing' is always false - no info state is produced immediately before a deal
+        self._dealing = False
         #this turn's cards already played by players are not currently being stored - card of active player is in _acard_state
 
         #score for each player 
@@ -321,6 +323,7 @@ class ElGrandeGameState(object):
     #functions for doing actions
     
     def _deal_all_decks(self):
+        #TODO - delete if no longer needed
         #set current cards as done
         self._acard_state = [_ST_AC_UNPLAYED if s==_ST_AC_UNPLAYED else _ST_AC_DONE for s in self._acard_state]
         #final card is always set ready after dealing (Deck5)
@@ -330,6 +333,36 @@ class ElGrandeGameState(object):
             next_card_guid = random.choice(card_guids)
             self._acard_state[self._get_cid(next_card_guid)-1]=_ST_AC_PLAY_READY
         self._turn_state[_ST_TN_PHASE]=self._get_phaseid('power')
+
+    def _deal_actions(self):
+        #_DECK_ENDS = [11,9,11,11,1] #hard coded number of cards per deck
+        dlists = []
+        for deck in self._decktrack:
+            deck_id=int(deck[4]) #5th character of 'Deckn'
+            cards = [i for i in range(_DECK_ENDS[deck_id-1])  if self._acard_state[self._get_cid(self._decktrack[deck][i])-1]==_ST_AC_UNPLAYED]
+            dlists = deal_lists+[cards]
+        action_list = [a + _DECK_ENDS[0]*(b + _DECK_ENDS[1]*(c + _DECK_ENDS[2]*d)) for a in dlists[0] for b in dlists[1] for c in dlists[2] for d in dlists[3]]
+        return sorted(action_list)
+
+    def _deck_pos_for_action(self,action):
+        deck1 = action%_DECK_ENDS[0]
+        deck2 = (action%(_DECK_ENDS[0] * _DECK_ENDS[1]))//_DECK_ENDS[0]
+        deck3 = (action%(_DECK_ENDS[0] * _DECK_ENDS[1] * _DECK_ENDS[2]))//(_DECK_ENDS[0] * _DECK_ENDS[1])
+        deck4 = action //(_DECK_ENDS[0] * _DECK_ENDS[1] * _DECK_ENDS[2])
+        return (deck1,deck2,deck3,deck4)
+    
+    def _deal_cards_from_action(self,action):
+        deck_positions = self.deck_pos_for_action(action)
+        for i in range(len(deck_positions)):
+            deck="Deck"+str(i)
+            self._acard_state[self._get_cid(self._decktrack[deck][deck_positions[i]])-1]=_ST_AC_PLAY_READY
+        self._turn_state[_ST_TN_PHASE]=self._get_phaseid('power')
+        self._dealing=False
+             
+    def _cards_for_action(self,action):
+        deck_positions = self.deck_pos_for_action(action)
+        guids = [self._decktrack["Deck"+str(i)] for i in range(len(deck_positions))]
+        return guids
 
     def _assign_power(self,power_id):
         #power_id is array position 0..12
@@ -810,7 +843,7 @@ class ElGrandeGameState(object):
                 self._turn_state[_ST_TN_PHASE]=_ST_PHASE_POWER
                 self._turn_state[_ST_TN_ROUND]+=1
                 self._pcard_state = np.full(_NUM_POWER_CARDS,0)
-                self._deal_all_decks()
+                self._dealing = True #next state will be "chance" and we will deal cards
                 
     def _after_score_step(self):
         new_scores = self._score_all_regions()
@@ -828,7 +861,13 @@ class ElGrandeGameState(object):
     # every game. Some not-often-used methods have been omitted.
 
     def current_player(self):
-        return pyspiel.PlayerId.TERMINAL if self._is_terminal else self._cur_player
+        """Returns id of the next player to move, or TERMINAL if game is over."""
+        if self._game_over:
+            return pyspiel.PlayerId.TERMINAL
+        elif self._dealing:
+            return pyspiel.PlayerId.CHANCE
+        else:
+            return self._cur_player
 
     def legal_actions(self, player=None):
         """Returns a list of legal actions, sorted in ascending order.
@@ -842,11 +881,11 @@ class ElGrandeGameState(object):
             return []
         elif self.is_terminal():
             return []
+        elif self._dealing:
+            return self._deal_actions()
         else:
             actions = []
-            if _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='start':
-                actions.append(_ACT_DEAL)
-            elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='power':
+            if _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='power':
                 cards = self._available_powers()
                 actions = actions + [c+_ACT_POWERS for c in cards]
             elif _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]=='action':
@@ -866,6 +905,14 @@ class ElGrandeGameState(object):
                     actions.append(_ACT_CHOOSE_SECRETS+i)
             
             return actions
+        
+    def chance_outcomes(self):
+        """Returns the possible chance outcomes and their probabilities."""
+        if not self._dealing:
+            raise ValueError("chance_outcomes called on a non-chance state.")
+        outcomes = self._deal_actions()
+        p = 1.0 / len(outcomes)
+        return [(o, p) for o in outcomes]
 
     def legal_actions_mask(self, player=None):
         """Get a list of legal actions.
@@ -898,8 +945,8 @@ class ElGrandeGameState(object):
         if not action in self.legal_actions():
             return
 
-        if action==_ACT_DEAL:
-            self._deal_all_decks()
+        if self._dealing:
+            self._deal_cards_from_action(action)
         elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
             self._acard_state[action - _ACT_CARDS] = _ST_AC_PLAY_INIT
             self._turn_state[_ST_TN_PHASE] = _ST_PHASE_CHOOSE
@@ -953,8 +1000,8 @@ class ElGrandeGameState(object):
         player = self.current_player() if arg1 is None else arg0
         action = arg0 if arg1 is None else arg1
         actionString=""
-        if action==_ACT_DEAL:
-            actionString = "Deal"
+        if self._dealing:
+            actionString = "Deal " + "|".join([self._cards[self._cardtrack[c]]['name'] for c in self._cards_for_action(action)])
         elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
             cardname = self._cards[self._cardtrack[action-_ACT_CARDS]]['name']
             actionString = "Action "+cardname
@@ -1005,7 +1052,7 @@ class ElGrandeGameState(object):
         return self.returns()[player]
 
     def is_chance_node(self):
-        if self._turn_state[_ST_TN_PHASE]==_ST_PHASE_START:
+        if self._dealing:
             return True
         else:
             return False
@@ -1088,7 +1135,7 @@ class ElGrandeGame(object):
         return ElGrandeGame()
 
     def max_chance_outcomes(self):
-        return _MAX_TURNS * _NUM_FULL_DECKS #chance outcomes for card dealing
+        return np.prod(_DECK_ENDS) #possible chance outcomes for card dealing
 
     def get_parameters(self):
         return {}
