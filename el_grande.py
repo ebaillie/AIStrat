@@ -113,7 +113,7 @@ _GAME_TYPE = pyspiel.GameType(
     provides_factored_observation_string=True)
 _GAME_INFO = pyspiel.GameInfo(
     num_distinct_actions=_ACT_END,  
-    max_chance_outcomes=43,  #Deck counts 11,9,11,11,1 
+    max_chance_outcomes=_NUM_ACTION_CARDS,  #Deck counts 11,9,11,11,1 
     num_players=5,
     min_utility=0.0,
     max_utility=1.0,
@@ -361,7 +361,7 @@ class ElGrandeGameState(pyspiel.State):
         self._turn_state[_ST_TN_PHASE]=self._get_phaseid('power')
 
     def _deal_actions(self):
-        cards = [i for i in range(43)  if self._acard_state[i]==_ST_AC_UNPLAYED]
+        cards = [i for i in range(_NUM_ACTION_CARDS)  if self._acard_state[i]==_ST_AC_UNPLAYED]
         return sorted(cards)
 
     def _deal_cards_from_action(self,action):
