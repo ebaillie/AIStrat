@@ -95,11 +95,37 @@ _ACT_CAB_MOVES = _ACT_MOVE_SCOREBOARDS + (_NUM_SCOREBOARDS*_NUM_REGIONS)
 _ACT_SKIP = _ACT_CAB_MOVES + (_NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS) #combos of moving a cab from region, to region, of player
 _ACT_END = _ACT_SKIP + 1 
 
-class ElGrandeGameState(object):
+
+_GAME_TYPE = pyspiel.GameType(
+    short_name="el_grande",
+    long_name="El Grande",
+    dynamics=pyspiel.GameType.Dynamics.SEQUENTIAL,
+    chance_mode=pyspiel.GameType.ChanceMode.EXPLICIT_STOCHASTIC,
+    information=pyspiel.GameType.Information.IMPERFECT_INFORMATION,
+    utility=pyspiel.GameType.Utility.ZERO_SUM,
+    reward_model=pyspiel.GameType.RewardModel.TERMINAL,
+    max_num_players=_MAX_PLAYERS,
+    min_num_players=_MAX_PLAYERS,
+    provides_information_state_string=True,
+    provides_information_state_tensor=True,
+    provides_observation_string=True,
+    provides_observation_tensor=True,
+    provides_factored_observation_string=True)
+_GAME_INFO = pyspiel.GameInfo(
+    num_distinct_actions=_ACT_END,  
+    max_chance_outcomes=43,  #Deck counts 11,9,11,11,1 
+    num_players=5,
+    min_utility=0.0,
+    max_utility=1.0,
+    utility_sum=1.0,
+    max_game_length=648)  # up to 12 sub_actions * 6 phases * 9 turns
+
+class ElGrandeGameState(pyspiel.State):
     """El Grande Game in open_spiel format
     """
 
     def __init__(self, game):
+        super().__init__(self,game)
         self._game = game
         self._cur_player = 0
         self._num_players = 0
@@ -335,35 +361,14 @@ class ElGrandeGameState(object):
         self._turn_state[_ST_TN_PHASE]=self._get_phaseid('power')
 
     def _deal_actions(self):
-        #_DECK_ENDS = [11,9,11,11,1] #hard coded number of cards per deck
-        dlists = []
-        for deck in self._decktrack:
-            deck_id=int(deck[4]) #5th character of 'Deckn'
-            cards = [i for i in range(_DECK_ENDS[deck_id-1])  if self._acard_state[self._get_cid(self._decktrack[deck][i])-1]==_ST_AC_UNPLAYED]
-            dlists = deal_lists+[cards]
-        action_list = [a + _DECK_ENDS[0]*(b + _DECK_ENDS[1]*(c + _DECK_ENDS[2]*d)) for a in dlists[0] for b in dlists[1] for c in dlists[2] for d in dlists[3]]
-        return sorted(action_list)
+        cards = [i for i in range(43)  if self._acard_state[i]==_ST_AC_UNPLAYED]
+        return sorted(cards)
 
-    def _deck_pos_for_action(self,action):
-        deck1 = action%_DECK_ENDS[0]
-        deck2 = (action%(_DECK_ENDS[0] * _DECK_ENDS[1]))//_DECK_ENDS[0]
-        deck3 = (action%(_DECK_ENDS[0] * _DECK_ENDS[1] * _DECK_ENDS[2]))//(_DECK_ENDS[0] * _DECK_ENDS[1])
-        deck4 = action //(_DECK_ENDS[0] * _DECK_ENDS[1] * _DECK_ENDS[2])
-        return (deck1,deck2,deck3,deck4)
-    
     def _deal_cards_from_action(self,action):
-        deck_positions = self.deck_pos_for_action(action)
-        for i in range(len(deck_positions)):
-            deck="Deck"+str(i)
-            self._acard_state[self._get_cid(self._decktrack[deck][deck_positions[i]])-1]=_ST_AC_PLAY_READY
+        self._acard_state[action]=_ST_AC_PLAY_READY
         self._turn_state[_ST_TN_PHASE]=self._get_phaseid('power')
         self._dealing=False
              
-    def _cards_for_action(self,action):
-        deck_positions = self.deck_pos_for_action(action)
-        guids = [self._decktrack["Deck"+str(i)] for i in range(len(deck_positions))]
-        return guids
-
     def _assign_power(self,power_id):
         #power_id is array position 0..12
         self._pcard_state[power_id] |= pow(2,self._cur_player)
@@ -874,7 +879,7 @@ class ElGrandeGameState(object):
 
     def current_player(self):
         """Returns id of the next player to move, or TERMINAL if game is over."""
-        if self._game_over:
+        if self._is_terminal:
             return pyspiel.PlayerId.TERMINAL
         elif self._dealing:
             return pyspiel.PlayerId.CHANCE
@@ -917,12 +922,13 @@ class ElGrandeGameState(object):
                     actions.append(_ACT_CHOOSE_SECRETS+i)
             
             return actions
-        
+    
     def chance_outcomes(self):
         """Returns the possible chance outcomes and their probabilities."""
         if not self._dealing:
             raise ValueError("chance_outcomes called on a non-chance state.")
         outcomes = self._deal_actions()
+        print(len(outcomes))
         p = 1.0 / len(outcomes)
         return [(o, p) for o in outcomes]
 
@@ -1014,7 +1020,7 @@ class ElGrandeGameState(object):
         action = arg0 if arg1 is None else arg1
         actionString=""
         if self._dealing:
-            actionString = "Deal " + "|".join([self._cards[self._cardtrack[c]]['name'] for c in self._cards_for_action(action)])
+            actionString = "Deal " 
         elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
             cardname = self._cards[self._cardtrack[action-_ACT_CARDS]]['name']
             actionString = "Action "+cardname
@@ -1128,12 +1134,12 @@ class ElGrandeGameState(object):
         
 
 
-class ElGrandeGame(object):
+class ElGrandeGame(pyspiel.Game):
     """El Grande Game
     """
 
-    def __init__(self):
-        pass
+    def __init__(self,params=None):
+        super().__init__(self, _GAME_TYPE, _GAME_INFO, params or dict())
 
     def new_initial_state(self):
         return ElGrandeGameState(self)
@@ -1206,7 +1212,7 @@ class ElGrandeGameObserver:
     """Observer, conforming to the PyObserver interface (see observer.py)."""
 
     def __init__(self):
-        self._obs = np.zeros((_ST_IDCH, _ST_IDX_END, _ST_IDY_END), np.float32)
+        self._obs = np.zeros((_ST_IDCH, _ST_BDX_END, _ST_BDY_END), np.float32)
         self.tensor = np.ravel(self._obs)
         self.dict = {"observation": self._obs}
 
@@ -1220,3 +1226,5 @@ class ElGrandeGameObserver:
     def string_from(self, state, player):
         del player
         return str(state)
+
+pyspiel.register_game(_GAME_TYPE,ElGrandeGame)
