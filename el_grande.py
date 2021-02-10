@@ -263,6 +263,11 @@ class ElGrandeGameState(pyspiel.State):
 
     def _region_cabcount(self,region_id,player_id):
         return self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_CABS + player_id]
+    
+    def _region_is_secret_choice(self,region_id,player_id=-1)
+        if player_id<0:
+            player_id=self._cur_player
+        return (self._board_state[region_id,_ST_BDY_SECRET] & pow(2,player_id) > 0)
 
     def _state_add_deck_info(self,cards,pastcards,data):
         #action cards, sorted by deck
@@ -564,7 +569,7 @@ class ElGrandeGameState(pyspiel.State):
                 final_scores = final_scores + self._score_one_region(i)
         elif region=='selfchoose':
             #choose a region to score - see if we did this already
-            regions = [i for i in range(_NUM_REGIONS) if (self._board_state[i,_ST_BDY_SECRET] & pow(2,self._cur_player) > 0)]
+            regions = [i for i in range(_NUM_REGIONS) if self._region_is_secret_choice(i)]
             assert(len(regions)<=1)
             if len(regions)==0:
                 choice_step=True
@@ -636,8 +641,7 @@ class ElGrandeGameState(pyspiel.State):
         #set correct state information for where we will be allowed to place caballeros
         self._movement_tracking['from']=[_ST_BDX_COURT]
         self._movement_tracking['lockfrom']=False
-        region_king = [b for b in range (_NUM_REGIONS) if self._board_state[b,_ST_BDY_GRANDE_KING] & pow(2,_ST_MASK_KING) != 0][0]
-        self._movement_tracking['to']=self._neighbors[region_king]+[_ST_BDX_CASTILLO]
+        self._movement_tracking['to']=self._neighbors[self._king_region()]+[_ST_BDX_CASTILLO]
         self._movement_tracking['lockto']=False
         self._movement_tracking['moving'] = True
         card = self._get_current_card()
@@ -812,8 +816,8 @@ class ElGrandeGameState(pyspiel.State):
 
     def _assess_secret_choices(self):
         #work out opponent choices, ultimately by running simulations, currently by random choice.
-        #ask for secret choices if you haven't already done so
-        regions = [self._board_state[i,_ST_BDY_SECRET] for i in range(_NUM_REGIONS) if (self._board_state[i,_ST_BDY_SECRET] & pow(2,self._cur_player) > 0)]
+        #ask for secret choices if you haven't already done so 
+        regions = [i for i in range(_NUM_REGIONS) if self._region_is_secret_choice(i)]
         assert(len(regions)<=1)
         #code for 'Eviction' card
         if self._movement_tracking['to']=='ownerchoose':
@@ -856,11 +860,11 @@ class ElGrandeGameState(pyspiel.State):
                     best_reg = np.where(loss==min(loss))   
                     chosen = random.choice(best_reg[0])
                     if self._movement_tracking['fromcondition']==2:
-                        self._board_state[11,i]+=2
+                        self._board_state[self._get_rid('province'),i]+=2
                         self._board_state[chosen,i] -= 2
                     else:
                         ncabs = self._board_state[chosen,i]
-                        self._board_state[11,i]+=ncabs
+                        self._board_state[self._get_rid('province'),i]+=ncabs
                         self._board_state[chosen,i] -=ncabs 
         self._init_move_info()
         self._after_action_step()
@@ -1021,18 +1025,7 @@ class ElGrandeGameState(pyspiel.State):
             if _SCORING_ROUND[self._turn_state[_ST_TN_ROUND]]:
                 self._turn_state[_ST_TN_PHASE]=_ST_PHASE_SCORE
             else:
-                powcards = {i:self._pcard_state[i] for i in range(_NUM_POWER_CARDS) if self._pcard_state[i]>0} 
-                lowest = sorted(powcards.keys())[0]
-                start_player = int(np.log2(powcards[lowest]))
-                self._cur_player = start_player
-                order = [start_player]
-                for i in range(1,self._num_players):
-                    order = order +[(start_player+i) % self._num_players]
-                self._playersleft = order
-                self._turn_state[_ST_TN_PHASE]=_ST_PHASE_POWER
-                self._turn_state[_ST_TN_ROUND]+=1
-                self._pcard_state = np.full(_NUM_POWER_CARDS,0)
-                self._dealing = True #next state will be "chance" and we will deal cards
+                self._update_players()
                 
     def _after_score_step(self):
         new_scores = self._score_all_regions()
@@ -1044,9 +1037,23 @@ class ElGrandeGameState(pyspiel.State):
             self._cur_player = pyspiel.PlayerId.TERMINAL
             self._is_terminal=True
         else:
-            #get everything ready for next round
-            self._cur_player = self._get_next_player()
+            self._update_players()
         
+    def _update_players(self):
+        #get everything ready for next round
+        powcards = {i:self._pcard_state[i] for i in range(_NUM_POWER_CARDS) if self._pcard_state[i]>0} 
+        lowest = sorted(powcards.keys())[0]
+        start_player = int(np.log2(powcards[lowest]))
+        self._cur_player = start_player
+        order = [start_player]
+        for i in range(1,self._num_players):
+            order = order +[(start_player+i) % self._num_players]
+        self._playersleft = order
+        self._turn_state[_ST_TN_PHASE]=_ST_PHASE_POWER
+        self._turn_state[_ST_TN_ROUND]+=1
+        self._pcard_state = np.full(_NUM_POWER_CARDS,0)
+        self._dealing = True #next state will be "chance" and we will deal cards
+
     # OpenSpiel (PySpiel) API functions are below. These need to be provided by
     # every game. Some not-often-used methods have been omitted.
 
