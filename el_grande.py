@@ -243,7 +243,7 @@ class ElGrandeGameState(pyspiel.State):
         return self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_GRANDE_KING] & (pow(2,_ST_MASK_KING)) == (pow(2,_ST_MASK_KING))
     
     def _king_region(self):
-        return np.where(egstate._board_state[:,el_grande._ST_BDY_GRANDE_KING]& (pow(2,el_grande._ST_MASK_KING))>0)[0]
+        return np.where(self._board_state[:,_ST_BDY_GRANDE_KING]& (pow(2,_ST_MASK_KING))>0)[0][0]
     
     def _state_add_cabs_grandes(self,data):
         for player_name in data.keys():
@@ -264,10 +264,15 @@ class ElGrandeGameState(pyspiel.State):
     def _region_cabcount(self,region_id,player_id):
         return self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_CABS + player_id]
     
-    def _region_is_secret_choice(self,region_id,player_id=-1)
+    def _region_is_secret_choice(self,region_id,player_id=-1):
         if player_id<0:
             player_id=self._cur_player
         return (self._board_state[region_id,_ST_BDY_SECRET] & pow(2,player_id) > 0)
+
+    def _secret_region(self,player_id=-1):
+        if player_id<0:
+            player_id=self._cur_player
+        return np.where(self._board_state[:,_ST_BDY_SECRET]& pow(2,player_id) > 0)[0][0]
 
     def _state_add_deck_info(self,cards,pastcards,data):
         #action cards, sorted by deck
@@ -490,6 +495,30 @@ class ElGrandeGameState(pyspiel.State):
     
     def _turn_info_str(self):
         return "Round "+ str(self._turn_state[_ST_TN_ROUND]) + " " + _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]] + "(player "+str(self._cur_player)+")"     
+   
+    def _move_castillo_pieces(self):
+        castillo=self._get_rid('Castillo')
+        region = self._secret_region()
+        ncabs=self._board_state[castillo,self._cur_player]
+        self._board_state[castillo,self._cur_player]=0
+        self._board_state[region,self._cur_player]+=ncabs
+        #choose a region for other players. For now, simulating other players
+        #by choosing a "reasonable" action for each other player - the one in 
+        #which they score the most
+
+        region_points = [self._score_one_region(i) for i in range(_NUM_REGIONS)]
+        for i in range(self._num_players):
+            if i!=self._cur_player and self._board_state[castillo,i]>0:
+                #figure out the most lucrative place to put cabs
+                ncabs=self._board_state[castillo,i]
+                ts = self.clone()
+                ts._board_state[:_NUM_REGIONS,i]+=ncabs
+                ts_points = [ts._score_one_region(i) for i in range(_NUM_REGIONS)]
+                improvement=np.array(ts_points)-np.array(region_points)
+                best_reg = [m for m in improvement[:,i] if m==max(improvement[:,i])]   
+                chosen = random.choice(best_reg)
+                self._board_state[castillo,i]=0
+                self._board_state[chosen,i]+=ncabs
     
     def _unique_score(self,action):
         region = action-_ACT_CHOOSE_SECRETS
@@ -632,9 +661,9 @@ class ElGrandeGameState(pyspiel.State):
     def _pack_court(self):
         #move the correct number of caballeros from province to court, at the point where player action commences
         power_id = np.where(self._pcard_state & pow(2,self._cur_player) == pow(2,self._cur_player))[0][0]
-        n_cabs = _POWER_CABS[power_id]
-        self._board_state[_ST_BDX_PROVINCE,self._cur_player] = self._board_state[_ST_BDX_PROVINCE,self._cur_player] - n_cabs
-        self._board_state[_ST_BDX_COURT,self._cur_player] = self._board_state[_ST_BDX_COURT,self._cur_player] + n_cabs
+        n_cabs = min(_POWER_CABS[power_id],self._board_state[_ST_BDX_PROVINCE,self._cur_player])
+        self._board_state[_ST_BDX_PROVINCE,self._cur_player] -= n_cabs
+        self._board_state[_ST_BDX_COURT,self._cur_player] += n_cabs
                            
         
     def _setup_caballero_placement(self):
@@ -732,7 +761,7 @@ class ElGrandeGameState(pyspiel.State):
             pattern['max']=150
         else:
             pattern['max']=card_details['number']
-        if card_details['numopt']=='lteq':
+        if card_details.get('numopt','lteq')=='lteq':
             pattern['min']=0 
         else:
             pattern['min']=pattern['max']
@@ -761,15 +790,18 @@ class ElGrandeGameState(pyspiel.State):
         if (fromreg[0] in [_ST_BDX_COURT,_ST_BDX_PROVINCE]) and (toreg[0] in [_ST_BDX_COURT,_ST_BDX_PROVINCE]):
             assert(len(fromreg)==1 and len(toreg)==1)
             sendCount=card_details['number']
-            if sendCount<0:
-                sendCount= self._board_state[fromreg[0],_ST_BDY_CABS+self._cur_player] #figure out how much the 'all' in 'send all' is
             for pl in range(self._num_players):
                 sendThis=True
                 if (card_details['player']=='foreign' and pl==self._cur_player) or  (card_details['player']=='self' and pl!=self._cur_player):
                     sendThis=False
                 if sendThis:
-                    self._board_state[fromreg[0],_ST_BDY_CABS+pl] -= sendCount
-                    self._board_state[toreg[0],_ST_BDY_CABS+pl] += sendCount
+                    if sendCount<0:
+                        #figure out how much the 'all' in 'send all' is
+                        ncabs= self._board_state[fromreg[0],_ST_BDY_CABS+pl]
+                    else:
+                        ncabs = min(sendCount,self._board_state[fromreg[0],_ST_BDY_CABS+pl]) 
+                    self._board_state[fromreg[0],_ST_BDY_CABS+pl] -= ncabs
+                    self._board_state[toreg[0],_ST_BDY_CABS+pl] += ncabs
 
             #null-out movement info, since we've done the move
             self._init_move_info()
@@ -834,8 +866,8 @@ class ElGrandeGameState(pyspiel.State):
                         ts._board_state[:_NUM_REGIONS,i]+=ncabs
                         ts_points = [ts._score_one_region(i) for i in range(_NUM_REGIONS)]
                         improvement=np.array(ts_points)-np.array(region_points)
-                        best_reg = np.where(improvement==max(improvement))   
-                        chosen = random.choice(best_reg[0])
+                        best_reg = [m for m in improvement[:,i] if m==max(improvement[:,i])]   
+                        chosen = random.choice(best_reg)
                         self._board_state[regions[0],i]==0
                         self._board_state[chosen,i] += ncabs
         elif self._movement_tracking['to']==self._get_rid('province'):
@@ -856,9 +888,10 @@ class ElGrandeGameState(pyspiel.State):
                     ts_points = [ts._score_one_region(i) for i in range(_NUM_REGIONS)]
                     loss=np.array(region_points) - np.array(ts_points)
                     #set loss to effective infinity in disallowed regions
-                    loss=np.array([loss[j] if allowed[j] else 1000 for j in range(_NUM_REGIONS)])
-                    best_reg = np.where(loss==min(loss))   
-                    chosen = random.choice(best_reg[0])
+                    loss_i=loss[:,i]
+                    loss_i=np.array([loss_i[j] if allowed[j] else 1000 for j in range(_NUM_REGIONS)])
+                    best_reg = [ l for l in loss_i if l==min(loss_i)]  
+                    chosen = random.choice(best_reg)
                     if self._movement_tracking['fromcondition']==2:
                         self._board_state[self._get_rid('province'),i]+=2
                         self._board_state[chosen,i] -= 2
@@ -952,6 +985,8 @@ class ElGrandeGameState(pyspiel.State):
         actions=[]
         if valid_action in['move','all']:
             return self._set_valid_cab_movements()
+        elif valid_action=='choose':
+            return[_ACT_DECIDE_ACT,_ACT_DECIDE_ACT_ALT]
         elif valid_action=='score':
             #if a 'score' action ends up here, we need to do region choice
             for i in range(_NUM_REGIONS):
@@ -1028,11 +1063,15 @@ class ElGrandeGameState(pyspiel.State):
                 self._update_players()
                 
     def _after_score_step(self):
-        new_scores = self._score_all_regions()
+        #score the castillo, move castillo pieces out, then score everything
+        self._turn_state[_ST_TN_SCORES:_ST_TN_SCORES+self._num_players]+=self._score_one_region(self._get_rid('Castillo'))
+        self._move_castillo_pieces()
+        self._turn_state[_ST_TN_SCORES:_ST_TN_SCORES+self._num_players]+=self._score_all_regions()
+        final_scores = self._turn_state[_ST_TN_SCORES:_ST_TN_SCORES+self._num_players]
         if self._turn_state[_ST_TN_ROUND]==_MAX_TURNS:
             #win points normalised between 0 and 1
-            min_score = min(new_scores)
-            divisor = max(new_scores)-min_score
+            min_score = min(final_scores)
+            divisor = max(final_scores)-min_score
             self._win_points = [(f-min_score)/divisor for f in final_scores]
             self._cur_player = pyspiel.PlayerId.TERMINAL
             self._is_terminal=True
