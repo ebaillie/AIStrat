@@ -136,14 +136,23 @@ class ElGrandeGameState(pyspiel.State):
         super().__init__(self,game)
         self._game = game
         self._cur_player = 0
-        self._num_players = 0
+        self._num_players = game._num_players
+        self._game_info = game._game_info
+        self._game_state = game._game_state
         self._is_terminal = False
         self._history = []
         self._winner = False
         self._dealing = True
         self._players = []
         self._end_turn = _MAX_TURNS #default end turn is 9
-        self._blank_board()
+        if self._game_info != '':
+            self._load_game_info(self._game_info)
+        elif self._game_state != '':
+            self._load_game_state(self._game_state)
+        else:
+            #start a game with a random player assortment
+            self._players=["P"+str(i) for i in range(self._num_players)]
+            self._load_game_info({'Players':self._players})
 
     # Helper functions (not part of the OpenSpiel API).
     
@@ -208,21 +217,13 @@ class ElGrandeGameState(pyspiel.State):
         self._pcard_state = np.full(_NUM_POWER_CARDS,0)
         self._past_pcard_state = np.full(_NUM_POWER_CARDS,0)
         self._turn_state = np.full(_ST_TN_END,0)
-        self._rewards = pieces._POINTS 
+        self._rewards = pieces._POINTS.copy() 
+        self._scoreboards = pieces._SCOREBOARDS.copy()
         self._init_move_info()
 
     def _load_game_info(self,jsonData):
         self._blank_board()
-        self._players = jsonData["Players"]
-        self._num_players = len(self._players)
-        self._win_points = np.full(self._num_players, 0)
-        #mobile scoreboard data, indexed by guid, containing points
-        #translate to indexing by id, with links to guid and points
-        boards=jsonData['Scoreboards']
-        self._scoreboards = [{'guid':b,'points':boards[b]['points']} for b in boards]
-        #start info, for game that starts from this code, not a fed-in state
-        self._playersleft = [self._get_pid(p) for p in self._players]
-        self._playersdone = []
+        self._state_add_players(jsonData["Players"])
         #random allocate players to region, put king,cabs and grandes down
         regions = [i for i in range(_NUM_REGIONS)]
         for i in range(self._num_players):
@@ -234,18 +235,28 @@ class ElGrandeGameState(pyspiel.State):
             regions = [i for i in regions if i!=region]
         king_region = random.choice(regions)
         self._board_state[king_region,_ST_BDY_GRANDE_KING] |= (pow(2,_ST_MASK_KING))
-    
+        self._turn_state[_ST_TN_ROUND]=1 
 
     #turn all relevant state info from DB format into game format
     def _load_game_state(self,jsonData):
         self._history = []
         self._blank_board()
+        self._state_add_players(jsonData['players'])
         self._state_add_king(jsonData['king'])
         self._state_add_cabs_grandes(jsonData['pieces'])
         self._state_add_deck_info(jsonData['cards'],jsonData['pastcards'],jsonData['turninfo'])
         self._state_add_turn_info(jsonData['turninfo'])
 
-        
+       
+    def _state_add_players(self, playerData):
+        self._players = playerData
+        self._num_players = len(self._players)
+        self._win_points = np.full(self._num_players, 0)
+        self._state_returns = np.full(self._num_players, 0)
+        self._playersleft = [self._get_pid(p) for p in self._players]
+        self._playersdone = []
+
+ 
     def _state_add_king(self,region_name):
         region_id = self._get_rid(region_name)
         assert(region_id < _ST_BDX_CASTILLO )
@@ -293,6 +304,14 @@ class ElGrandeGameState(pyspiel.State):
         if player_id<0:
             player_id=self._cur_player
         return np.where(self._board_state[:,_ST_BDY_SECRET]& pow(2,player_id) > 0)[0][0]
+
+    def _set_rewards(self,new_scores):
+        #support both TERMINAL and REWARD mode
+        self._turn_state[_ST_TN_SCORES:_ST_TN_SCORES+self._num_players]+=new_scores
+        self._state_returns = new_scores - np.mean(new_scores)
+
+    def _current_score(self):
+        return self._turn_state[_ST_TN_SCORES:_ST_TN_SCORES+self._num_players]
 
     def _next_score_step_player(self):
         #find another player who needs to make a secret region choice in scoring round
@@ -452,8 +471,10 @@ class ElGrandeGameState(pyspiel.State):
     def _move_scoreboard(self,board_id,region_id):
         points = self._scoreboards[board_id]['points']
         self._rewards[region_id]=points
+        oldregion = self._scoreboards[board_id].get('region',-1)
+        if oldregion>0 and oldregion<len(self._rewards):
+            self._rewards[oldregion] = pieces._POINTS[oldregion]
         self._scoreboards[board_id]['region']=region_id
-        #TODO - keep consistent when scoreboard moved from another region
 
     def _move_one_cab(self,from_region, to_region, of_player):
         assert(self._board_state[from_region,of_player]>0)
@@ -479,7 +500,7 @@ class ElGrandeGameState(pyspiel.State):
         if self._region_has_king(region_id):
             retstr = retstr + " K"
         retstr = retstr.ljust(18," ")+ "-  " + pieces._REGIONS[region_id].rjust(18," ")
-        if region_id < pieces._NUM_EXT_REGIONS:
+        if region_id <= pieces._NUM_EXT_REGIONS:
             retstr = retstr + str(self._rewards[region_id])
         return retstr
     
@@ -506,7 +527,7 @@ class ElGrandeGameState(pyspiel.State):
         return "|".join(names)
     
     def _turn_info_str(self):
-        return "Round "+ str(self._turn_state[_ST_TN_ROUND]) + " " + _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]] + "(player "+str(self._cur_player)+") - Scores " +str(self._turn_state[_ST_TN_SCORES:_ST_TN_SCORES+self._num_players])    
+        return "Round "+ str(self._turn_state[_ST_TN_ROUND]) + " " + _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]] + "(player "+str(self._cur_player)+") - Cumulative Scores " +str(self._current_score())    
    
     def _move_castillo_pieces(self):
         for i in range(self._num_players):
@@ -544,7 +565,7 @@ class ElGrandeGameState(pyspiel.State):
         final_scores=np.full(self._num_players,0)
         for r in score_regions:
             final_scores += self._score_one_region(r)
-        self._turn_state[_ST_TN_SCORES:_ST_TN_SCORES+self._num_players]+=final_scores
+        self._set_rewards(final_scores)
 
  
     def _special_score(self,details):
@@ -603,7 +624,7 @@ class ElGrandeGameState(pyspiel.State):
                 final_scores = final_scores + self._score_one_region(i,True)
                 
         if not choice_step:
-            self._turn_state[_ST_TN_SCORES:_ST_TN_SCORES+self._num_players]+=final_scores
+            self._set_rewards(final_scores)
 
     def _score_one_region(self,region,top_only=False):
         assert(region>=0 and region<=pieces._NUM_EXT_REGIONS) 
@@ -1066,10 +1087,11 @@ class ElGrandeGameState(pyspiel.State):
     def _after_score_step(self):
         #if everybody who needs to has chosen a secret region, do the scoring
         #score the castillo, move castillo pieces out, then score everything
-        self._turn_state[_ST_TN_SCORES:_ST_TN_SCORES+self._num_players]+=self._score_one_region(pieces._CASTILLO)
+        new_scores=self._score_one_region(pieces._CASTILLO)
         self._move_castillo_pieces()
-        self._turn_state[_ST_TN_SCORES:_ST_TN_SCORES+self._num_players]+=self._score_all_regions()
-        final_scores = self._turn_state[_ST_TN_SCORES:_ST_TN_SCORES+self._num_players]
+        new_scores+=self._score_all_regions()
+        self._set_rewards(new_scores)
+        final_scores = self._current_score()
         self._board_state[:,_ST_BDY_SECRET]=0 
         if self._turn_state[_ST_TN_ROUND]==self._end_turn:
             # first player is +ve, second is 0, subsequent are -ve 
@@ -1188,6 +1210,8 @@ class ElGrandeGameState(pyspiel.State):
         if not action in self.legal_actions():
             return
 
+        #initialise rewards to zero
+        self._set_rewards(np.full(self._num_players,0))
         if self._dealing:
             self._deal_cards_from_action(action)
         elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
@@ -1300,7 +1324,9 @@ class ElGrandeGameState(pyspiel.State):
         return self._is_terminal
 
     def returns(self):
+        #Set to 'win_points' for TERMINAL reward model, 'state_returns' for REWARDS
         return self._win_points
+        #return self._state_returns
 
     def rewards(self):
         return self.returns()
@@ -1374,6 +1400,7 @@ class ElGrandeGameState(pyspiel.State):
         my_copy._board_state = self._board_state.copy()
         my_copy._cur_player=self._cur_player
         my_copy._dealing = self._dealing
+        my_copy._end_turn = self._end_turn
         my_copy._history=self._history.copy()
         my_copy._is_terminal=self._is_terminal
         my_copy._movement_tracking = copy.deepcopy(self._movement_tracking)
@@ -1387,6 +1414,7 @@ class ElGrandeGameState(pyspiel.State):
         my_copy._scoreboards = self._scoreboards.copy()
         my_copy._turn_state = self._turn_state.copy()
         my_copy._win_points = self._win_points.copy()
+        my_copy._state_returns = self._state_returns.copy()
         my_copy._winner=self._winner
         return my_copy
 
@@ -1394,10 +1422,33 @@ class ElGrandeGame(pyspiel.Game):
     """El Grande Game
     """
 
-    def __init__(self,params={"players":pyspiel.GameParameter(4)}):
+    def __init__(self,params={"players":pyspiel.GameParameter(_DEFAULT_PLAYERS),"game_info":pyspiel.GameParameter(''),"game_state":pyspiel.GameParameter('')}):
+        couchip = '127.0.0.1:5984'
+        credentials = 'admin:elderberry'
+        couch = couchdb.Server('http://'+credentials+'@'+couchip)
         super().__init__(self, _GAME_TYPE, _GAME_INFO, params or dict())
-        #self._num_players=params["players"]
         self._num_players=4
+        if params.get("players",None) is not None:
+            self._num_players=params["players"].int_value()
+        game_info=''
+        game_state=''
+
+        if params.get("game_info",None) is not None:
+            game_info=params["game_info"].string_value()
+        if params.get("game_state",None) is not None:
+            game_state=params["game_state"].string_value()
+
+        if game_info == '':
+            self._game_info = ''
+        else:
+            gamedb = couch['game']
+            self._game_info = gamedb[game_info]
+        
+        if game_state == '':
+            self._game_state=''
+        else:
+            gamehistdb = couch['game_history']
+            self._game_state = gamehistdb[game_state]
 
     def new_initial_state(self):
         return ElGrandeGameState(self)
@@ -1427,22 +1478,7 @@ class ElGrandeGame(pyspiel.Game):
         return 1.0
 
     def get_type(self):
-        return pyspiel.GameType(
-            short_name="python_el_grande_game",
-            long_name="Python El Grande Game",
-            dynamics=pyspiel.GameType.Dynamics.SEQUENTIAL,
-            chance_mode=pyspiel.GameType.ChanceMode.EXPLICIT_STOCHASTIC,
-            information=pyspiel.GameType.Information.PERFECT_INFORMATION, #secret choice steps implemented as sub-games
-            utility=pyspiel.GameType.Utility.CONSTANT_SUM, #note: maybe this should be GENERAL_SUM?
-            reward_model=pyspiel.GameType.RewardModel.TERMINAL,
-            max_num_players=_MAX_PLAYERS,
-            min_num_players=1,
-            provides_information_state_string=True,
-            provides_information_state_tensor=True,
-            provides_observation_string=True,
-            provides_observation_tensor=True,
-            parameter_specification={},
-        )
+        return _GAME_TYPE
 
     def utility_sum(self):
         return 0.0

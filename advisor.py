@@ -13,7 +13,7 @@ credentials = 'admin:elderberry'
 couch = couchdb.Server('http://'+credentials+'@'+couchip)
 #list of advice actions which should be generated for each relevant phase
 adviceTypes = {'power':['opponent_report','score_predictions','explain_cards','home_report'], 
-  'action':['caballero_value','card_action_value','opponent_report','score_predictions','explain_cards','home_report'],
+  'action':['caballero_value','card_action_value','opponent_report','score_predictions','explain_cards','home_report','suggestion'],
   'scoring':['castillo','opponent_report','score_predictions']}
 #regions, as in TTS code
 regions=["Galicia","Pais Vasco","Aragon","Cataluna","Castilla la Vieja","Castilla la Nueva","Valencia","Sevilla","Granada"]
@@ -59,6 +59,8 @@ def makeAdvice(player,atype,jsonObject):
       advice = opponentReportAdvice(player,jsonObject)
     elif atype=='score_predictions':
       advice = scorePredictionsAdvice(player,jsonObject)
+    elif atype=='suggestion':
+      advice = suggestionAdvice(player,jsonObject)
       
     try:
       adviceDB = couch['game_advice']
@@ -132,7 +134,12 @@ def opponentReportAdvice(player,jsonObject):
 def scorePredictionsAdvice(player,jsonObject):
     advice = initAdviceStructure(player,jsonObject)
     return advice
-  
+ 
+#suggestion of what cards to play
+def suggestionsAdvice(player, jsonObject):
+    advice = initAdviceStructure(player, jsonObject)
+    return advice
+ 
 #generate all region ranking data for one region
 #regionName - string
 #pieces - dictionary of playername[regionName]:caballeroCount

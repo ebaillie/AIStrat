@@ -1,3 +1,15 @@
+"""
+Information about El Grande's initial board, power cards, action cards and movable scoreboards.
+Most of this information remains unchanged for each game.
+'_POINTS' and '_SCOREBOARDS' objects should be copied to game state rather than accessed directly, since they get some small modifications
+whenever a movable scoreboard is moved to a region, to reflect the updated region score.
+
+GUIDs, where present, are those allocated to the objects in the Tabletop Simulator version of the game. 
+In the context of the Python version, they are simply arbitrary labels, but should remain unchanged for compatibility purposes
+
+"""
+
+
 _NUM_REGIONS = 9 #main board regions
 _CASTILLO = 9 #castillo index
 _COURT = 10 #court index
@@ -18,7 +30,9 @@ _REGIONS = ['Aragon', 'Castilla la Nueva', 'Castilla la Vieja', 'Cataluna', 'Gal
 
 _NEIGHBORS = [[1,2,3,6,8], [0,2,5,7,8], [0,1,4,6], [0, 8], [2,6], [1,7,8], [0,2,4], [1,5], [0,1,3,5]]
 
-_POINTS = [[5, 4, 1], [7, 4, 2], [6, 4, 2], [4, 2, 1], [4, 0, 0], [8, 4, 0], [5, 3, 1], [8, 4, 0], [5, 3, 2], [5, 3, 1]]
+_POINTS = [[5, 4, 1], [7, 4, 2], [6, 4, 2], [4, 2, 1], [4, 2, 0], [6, 3, 1], [5, 3, 1], [4, 3, 1], [5, 3, 2], [5, 3, 1]]
+
+_SCOREBOARDS = [{'guid': '1d084c', 'points': [4, 0, 0]}, {'guid': '32ebea', 'points': [8, 4, 0]}]
 
 _DECKTRACK = {
                 'Deck1':['18741e','216892','314091','35e53f','5fb89e','64eb17','6d9e0b','94545b','bf04b8','dd9df5','f0732a'],
