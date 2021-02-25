@@ -4,13 +4,18 @@ import os
 import re
 import requests
 import sys
+import advisor
 
 from flask import Flask,jsonify,redirect,request
 from flask import request
+from multiprocessing import Process, Manager
 
 app = Flask(__name__)
 
 localhost='127.0.0.1'
+
+manager = Manager()
+game_histories = manager.dict()
 
 @app.route('/')
 def hello_world():
@@ -19,6 +24,7 @@ def hello_world():
 
 @app.route('/forward',methods=['PUT'])
 def forward_request():
+
     params = request.get_json(force=True)
 
     url = params.get('url')
@@ -48,7 +54,8 @@ def forward_request():
 #    if body:
 #        body = body.encode()
 
-
+    #send the body to the advisor code, as well as storing it in the db
+    advisor.processDBInput(body, game_histories)
     response = requests.request(method, url, timeout=60.0, headers=headers, data=body)
 
     wrapped_response = {
