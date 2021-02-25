@@ -108,8 +108,9 @@ _GAME_TYPE = pyspiel.GameType(
     short_name="el_grande",
     long_name="El Grande",
     dynamics=pyspiel.GameType.Dynamics.SEQUENTIAL,
-    chance_mode=pyspiel.GameType.ChanceMode.EXPLICIT_STOCHASTIC,
-    information=pyspiel.GameType.Information.PERFECT_INFORMATION,
+    #chance_mode=pyspiel.GameType.ChanceMode.EXPLICIT_STOCHASTIC,
+    chance_mode=pyspiel.GameType.ChanceMode.DETERMINISTIC,
+    information=pyspiel.GameType.Information.PERFECT_INFORMATION, #not strictly true for deterministic chance mode, but close
     utility=pyspiel.GameType.Utility.GENERAL_SUM, 
     reward_model=pyspiel.GameType.RewardModel.TERMINAL,
     max_num_players=_MAX_PLAYERS,
@@ -137,22 +138,19 @@ class ElGrandeGameState(pyspiel.State):
         self._game = game
         self._cur_player = 0
         self._num_players = game._num_players
-        self._game_info = game._game_info
         self._game_state = game._game_state
         self._is_terminal = False
         self._history = []
         self._winner = False
-        self._dealing = True
+        #self._dealing = True #for games with card dealing on the fly and CHANCE mode on
         self._players = []
         self._end_turn = _MAX_TURNS #default end turn is 9
-        if self._game_info != '':
-            self._load_game_info(self._game_info)
-        elif self._game_state != '':
+        if self._game_state != '':
             self._load_game_state(self._game_state)
         else:
             #start a game with a random player assortment
             self._players=["P"+str(i) for i in range(self._num_players)]
-            self._load_game_info({'Players':self._players})
+            self._generate_board({'Players':self._players})
 
     # Helper functions (not part of the OpenSpiel API).
     
@@ -214,6 +212,8 @@ class ElGrandeGameState(pyspiel.State):
     def _blank_board(self):
         self._board_state = np.full((_ST_BDX_END,_ST_BDY_END),0)
         self._acard_state = np.full(_NUM_ACTION_CARDS,0)
+        self._acard_round = np.full(_NUM_ACTION_CARDS,0)
+        self._shuffle_acards() #for deterministic 'deal-at-start' card placement
         self._pcard_state = np.full(_NUM_POWER_CARDS,0)
         self._past_pcard_state = np.full(_NUM_POWER_CARDS,0)
         self._turn_state = np.full(_ST_TN_END,0)
@@ -221,7 +221,21 @@ class ElGrandeGameState(pyspiel.State):
         self._scoreboards = pieces._SCOREBOARDS.copy()
         self._init_move_info()
 
-    def _load_game_info(self,jsonData):
+    def _shuffle_acards(self):
+        for i in range(_NUM_FULL_DECKS):
+            deckname='Deck'+str(i+1)
+            order = pieces._DECKTRACK[deckname].copy()
+            random.shuffle(order)
+            for j in range(len(order)):
+                cid = self._get_cid(order[j])
+                self._acard_round[cid]=j+1
+                if j==0:
+                    self._acard_state[cid] = _ST_AC_DEALT
+        #final deck
+        self._acard_round[-1] = 1
+        self._acard_state[-1] = _ST_AC_DEALT
+
+    def _generate_board(self,jsonData):
         self._blank_board()
         self._state_add_players(jsonData["Players"])
         #random allocate players to region, put king,cabs and grandes down
@@ -235,7 +249,8 @@ class ElGrandeGameState(pyspiel.State):
             regions = [i for i in regions if i!=region]
         king_region = random.choice(regions)
         self._board_state[king_region,_ST_BDY_GRANDE_KING] |= (pow(2,_ST_MASK_KING))
-        self._turn_state[_ST_TN_ROUND]=1 
+        self._turn_state[_ST_TN_ROUND]=1
+        self._turn_state[_ST_TN_PHASE] = _ST_PHASE_POWER 
 
     #turn all relevant state info from DB format into game format
     def _load_game_state(self,jsonData):
@@ -244,7 +259,7 @@ class ElGrandeGameState(pyspiel.State):
         self._state_add_players(jsonData['players'])
         self._state_add_king(jsonData['king'])
         self._state_add_cabs_grandes(jsonData['pieces'])
-        self._state_add_deck_info(jsonData['cards'],jsonData['pastcards'],jsonData['turninfo'])
+        self._state_add_deck_info(jsonData['cards'],jsonData['pastcards'],jsonData['deckpositions'],jsonData['turninfo'])
         self._state_add_turn_info(jsonData['turninfo'])
 
        
@@ -322,9 +337,17 @@ class ElGrandeGameState(pyspiel.State):
         else:
             return -1
 
-    def _state_add_deck_info(self,cards,pastcards,data):
+    def _state_add_deck_info(self,cards,pastcards,deckpositions,data):
         #action cards, sorted by deck
-        self._dealing=False
+        #self._dealing=False
+        round=data['round']
+        for deck in deckpositions:
+            for pos in range(len(deck)):
+                cid=self._get_cid(deck[pos])
+                self._acard_round[cid]=pos
+                if pos==round:
+                    self._acard_state[cid]=_ST_AC_DEALT
+ 
         if len(cards)>0:
             for deck in cards.keys():
                 card_id = self._get_cid(cards[deck])
@@ -344,10 +367,11 @@ class ElGrandeGameState(pyspiel.State):
                     self._acard_state[card_id]=_ST_AC_DEALT
                 else:
                     self._acard_state[card_id]=_ST_AC_CHOSEN
-        else:
+        #else:
             #set flag to ensure dealing cards will be the first thing we do
-            if data['phase'] in ['start','power']:
-                self._dealing=True
+            #if data['phase'] in ['start','power']:
+            #    self._dealing=True
+
 
         #'done' cards dealt in previous rounds
         for deck in pastcards.keys():
@@ -1115,7 +1139,16 @@ class ElGrandeGameState(pyspiel.State):
         self._turn_state[_ST_TN_PHASE]=_ST_PHASE_POWER
         self._turn_state[_ST_TN_ROUND]+=1
         self._pcard_state = np.full(_NUM_POWER_CARDS,0)
-        self._dealing = True #next state will be "chance" and we will deal cards
+        #self._dealing = True #next state will be "chance" and we will deal cards
+        #make the right cards dealt
+        round = self._turn_state[_ST_TN_ROUND]
+        for i in range(_NUM_ACTION_CARDS):
+            if self._acard_round[i]==round:
+                self._acard_state[i] = _ST_AC_DEALT
+            elif self._acard_round[i]==(round-1):
+                self._acard_state[i] = _ST_AC_DONE
+        self._acard_state[-1] = _ST_AC_DEALT
+
 
     # OpenSpiel (PySpiel) API functions are below. These need to be provided by
     # every game. Some not-often-used methods have been omitted.
@@ -1124,8 +1157,8 @@ class ElGrandeGameState(pyspiel.State):
         """Returns id of the next player to move, or TERMINAL if game is over."""
         if self._is_terminal:
             return pyspiel.PlayerId.TERMINAL
-        elif self._dealing:
-            return pyspiel.PlayerId.CHANCE
+        #elif self._dealing:
+        #    return pyspiel.PlayerId.CHANCE
         else:
             return self._cur_player
 
@@ -1141,8 +1174,8 @@ class ElGrandeGameState(pyspiel.State):
             return []
         elif self.is_terminal():
             return []
-        elif self._dealing:
-            return self._deal_actions()
+        #elif self._dealing:
+        #    return self._deal_actions()
         else:
             actions = []
             if self._turn_state[_ST_TN_PHASE]==_ST_PHASE_POWER:
@@ -1171,12 +1204,12 @@ class ElGrandeGameState(pyspiel.State):
     
     def chance_outcomes(self):
         """Returns the possible chance outcomes and their probabilities."""
-        if not self._dealing:
-            raise ValueError("chance_outcomes called on a non-chance state.")
-        outcomes = self._deal_actions()
-        #print(len(outcomes))
-        p = 1.0 / len(outcomes)
-        return [(o, p) for o in outcomes]
+        return []
+        #if not self._dealing:
+        #    raise ValueError("chance_outcomes called on a non-chance state.")
+        #outcomes = self._deal_actions()
+        #p = 1.0 / len(outcomes)
+        #return [(o, p) for o in outcomes]
 
     def legal_actions_mask(self, player=None):
         """Get a list of legal actions.
@@ -1212,9 +1245,10 @@ class ElGrandeGameState(pyspiel.State):
 
         #initialise rewards to zero
         self._set_rewards(np.full(self._num_players,0))
-        if self._dealing:
-            self._deal_cards_from_action(action)
-        elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
+        #if self._dealing:
+        #    self._deal_cards_from_action(action)
+        #el
+        if action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
             self._acard_state[action - _ACT_CARDS] = _ST_AC_CHOSEN
             self._turn_state[_ST_TN_PHASE] = _ST_PHASE_CHOOSE
         elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWER_CARDS:
@@ -1282,9 +1316,10 @@ class ElGrandeGameState(pyspiel.State):
         player = self.current_player() if arg1 is None else arg0
         action = arg0 if arg1 is None else arg1
         actionString=""
-        if self._dealing:
-            actionString = "Deal " + "|".join([pieces._CARDS[c]['name'] for c in self._cards_for_action(action)])
-        elif action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
+        #if self._dealing:
+        #    actionString = "Deal " + "|".join([pieces._CARDS[c]['name'] for c in self._cards_for_action(action)])
+        #el
+        if action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
             cardname = pieces._CARDS[pieces._CARDTRACK[action-_ACT_CARDS]]['name']
             actionString = "Action "+cardname
         elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWER_CARDS:
@@ -1338,10 +1373,10 @@ class ElGrandeGameState(pyspiel.State):
         return self.returns()[player]
 
     def is_chance_node(self):
-        if self._dealing:
-            return True
-        else:
-            return False
+        #if self._dealing:
+        #    return True
+        #else:
+        return False
 
     def is_simultaneous_node(self):
         return False
@@ -1397,9 +1432,10 @@ class ElGrandeGameState(pyspiel.State):
         #TODO - see if we can do this without needing explicit statements
         my_copy = self._game.new_initial_state()
         my_copy._acard_state = self._acard_state.copy()
+        my_copy._acard_round = self._acard_round.copy()
         my_copy._board_state = self._board_state.copy()
         my_copy._cur_player=self._cur_player
-        my_copy._dealing = self._dealing
+        #my_copy._dealing = self._dealing
         my_copy._end_turn = self._end_turn
         my_copy._history=self._history.copy()
         my_copy._is_terminal=self._is_terminal
@@ -1422,7 +1458,7 @@ class ElGrandeGame(pyspiel.Game):
     """El Grande Game
     """
 
-    def __init__(self,params={"players":pyspiel.GameParameter(_DEFAULT_PLAYERS),"game_info":pyspiel.GameParameter(''),"game_state":pyspiel.GameParameter('')}):
+    def __init__(self,params={"players":pyspiel.GameParameter(_DEFAULT_PLAYERS),"game_state":pyspiel.GameParameter(''),"game_state_json":pyspiel.GameParameter('')}):
         couchip = '127.0.0.1:5984'
         credentials = 'admin:elderberry'
         couch = couchdb.Server('http://'+credentials+'@'+couchip)
@@ -1430,22 +1466,19 @@ class ElGrandeGame(pyspiel.Game):
         self._num_players=4
         if params.get("players",None) is not None:
             self._num_players=params["players"].int_value()
-        game_info=''
         game_state=''
-
-        if params.get("game_info",None) is not None:
-            game_info=params["game_info"].string_value()
+        game_state_json=''
+        
         if params.get("game_state",None) is not None:
             game_state=params["game_state"].string_value()
+        if params.get("game_state_json",None) is not None:
+            game_state_json=params["game_state_json"].string_value()
 
-        if game_info == '':
-            self._game_info = ''
-        else:
-            gamedb = couch['game']
-            self._game_info = gamedb[game_info]
-        
-        if game_state == '':
+        #there is no need for _state and _state_json to both be given as parameters - if they are, use _state_json
+        if game_state == '' and game_state_json == '':
             self._game_state=''
+        elif game_state_json != '':
+            self._game_state = game_state_json
         else:
             gamehistdb = couch['game_history']
             self._game_state = gamehistdb[game_state]
@@ -1541,7 +1574,7 @@ class ElGrandeGameObserver:
         self._cards[:_NUM_ACTION_CARDS]=cards_ud_cd
         self._cards[_NUM_ACTION_CARDS:]=cards_uc_dd
 
-        self._phase[:]=self._PHASES[state._turn_state[_ST_TS_PHASE]]
+        self._phase[:]=self._PHASES[state._turn_state[_ST_TN_PHASE]]
 
     def string_from(self, state, player):
         del player
