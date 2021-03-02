@@ -30,7 +30,7 @@ _MAX_TURNS = 9 #full game has 9 turns, but we can specify fewer if need be
 _SCORING_ROUND = [False,False,False,True,False,False,True,False,False,True]
 _NUM_SCOREBOARDS = 2
 
-_DEFAULT_PLAYERS = 4
+_DEFAULT_PLAYERS = 2
 
 
 #State matrix indicators
@@ -209,11 +209,12 @@ class ElGrandeGameState(pyspiel.State):
         #default is a multi-move, since this is the most common
         return _ST_STEPS_MULTI 
 
-    def _blank_board(self):
+    def _blank_board(self,deal=False):
         self._board_state = np.full((_ST_BDX_END,_ST_BDY_END),0)
         self._acard_state = np.full(_NUM_ACTION_CARDS,0)
         self._acard_round = np.full(_NUM_ACTION_CARDS,0)
-        self._shuffle_acards() #for deterministic 'deal-at-start' card placement
+        if deal:
+            self._shuffle_acards() #for deterministic 'deal-at-start' card placement
         self._pcard_state = np.full(_NUM_POWER_CARDS,0)
         self._past_pcard_state = np.full(_NUM_POWER_CARDS,0)
         self._turn_state = np.full(_ST_TN_END,0)
@@ -236,7 +237,7 @@ class ElGrandeGameState(pyspiel.State):
         self._acard_state[-1] = _ST_AC_DEALT
 
     def _generate_board(self,jsonData):
-        self._blank_board()
+        self._blank_board(True)
         self._state_add_players(jsonData["Players"])
         #random allocate players to region, put king,cabs and grandes down
         regions = [i for i in range(_NUM_REGIONS)]
@@ -342,12 +343,13 @@ class ElGrandeGameState(pyspiel.State):
         #self._dealing=False
         round=data['round']
         for deck in deckpositions:
-            for pos in range(len(deck)):
-                cid=self._get_cid(deck[pos])
-                self._acard_round[cid]=pos
-                if pos==round:
+            for pos in range(len(deckpositions[deck])):
+                cid=self._get_cid(deckpositions[deck][pos])
+                self._acard_round[cid]=pos+1
+                if (pos+1)==round:
                     self._acard_state[cid]=_ST_AC_DEALT
- 
+        #always indicate deck5 card as 'dealt'
+        self._acard_state[-1]=_ST_AC_DEALT 
         if len(cards)>0:
             for deck in cards.keys():
                 card_id = self._get_cid(cards[deck])
@@ -361,7 +363,6 @@ class ElGrandeGameState(pyspiel.State):
                     if len(data['cabsdone'])>0:
                         cabsdone=data['cabsdone'].get(data['playersleft'][0],False)
                 if actdone and cabsdone:
-                    assert(False) #TODO - work out what to actually do here
                     self._acard_state[card_id]=_ST_AC_DONE
                 elif not actdone and not cabsdone:
                     self._acard_state[card_id]=_ST_AC_DEALT
@@ -406,6 +407,11 @@ class ElGrandeGameState(pyspiel.State):
         self._turn_state[_ST_TN_ROUND]=data['round']
         #phase
         self._turn_state[_ST_TN_PHASE]=self._get_phaseid(data['phase'])
+        #for 'deal all at game start' implementation, don't need explicit round start phase
+        if self._turn_state[_ST_TN_PHASE] == _ST_PHASE_START:
+            self._turn_state[_ST_TN_PHASE] = _ST_PHASE_POWER
+            #ensure Deck5 always turned over at start
+            self._acard_state[-1] = _ST_AC_DEALT
 
         #this turn's cards already played by players are not currently being stored - card of active player is in _acard_state
 
@@ -415,11 +421,23 @@ class ElGrandeGameState(pyspiel.State):
             score = data['scores'][player_name]
             self._turn_state[_ST_TN_SCORES+player_id]=score
         #player order - stored internally for ease of use, not strictly needed in _state_ elements
-        #not currently dealing with the turns that get loaded after everyone played
-        #and before the next phase - reject them
-        assert(len(data['playersleft'])>0)
-        self._playersleft=[self._get_pid(p) for p in data['playersleft']]
-        self._cur_player = self._playersleft[0] if len(self._playersleft)>0 else 0
+        if len(data['playersleft']) == 0:
+            #nothing more to do in this phase, update to next
+            if self._turn_state[_ST_TN_PHASE] == _ST_PHASE_POWER:
+                self._update_players_after_power()
+            else:
+                self._update_players_after_action()
+        elif self._turn_state[_ST_TN_PHASE] == _ST_PHASE_SCORE and not _SCORING_ROUND[self._turn_state[_ST_TN_ROUND]]:
+            #scoring phase with no score action - skip to next
+            self._turn_state[_ST_TN_PHASE] = _ST_PHASE_POWER
+            self._turn_state[_ST_TN_ROUND] += 1
+            self._acard_state = np.array([1 if self._acard_round[i]==self._turn_state[_ST_TN_ROUND] else self._acard_state[i] for i in range(_NUM_ACTION_CARDS)])
+            self._acard_state[-1]=1
+            self._playersleft=[self._get_pid(p) for p in data['playersleft']]
+            self._cur_player = self._playersleft[0]
+        else:
+            self._playersleft=[self._get_pid(p) for p in data['playersleft']]
+            self._cur_player = self._playersleft[0] if len(self._playersleft)>0 else 0
             
 
     #functions for doing actions
@@ -1058,15 +1076,7 @@ class ElGrandeGameState(pyspiel.State):
             self._playersleft = self._playersleft[1:]
         else:
             #redo the whole queue, and move on to 'action' phase
-            powcards = {i:self._pcard_state[i] for i in range(_NUM_POWER_CARDS) if self._pcard_state[i]>0} 
-            order=[]
-            keys = sorted(powcards.keys(),reverse=True)
-            for i in keys:
-                player_id = int(np.log2(powcards[i]))
-                order = order + [player_id]
-            self._cur_player=order[0]
-            self._playersleft=order
-            self._turn_state[_ST_TN_PHASE]=self._get_phaseid('action')
+            self._update_players_after_power()
 
     def _after_action_step(self):    
         #functions to determine if we should move to the next phase and/or the next player, 
@@ -1106,7 +1116,7 @@ class ElGrandeGameState(pyspiel.State):
                 #make sure secret region choices are all blank before we start this
                 self._board_state[:,_ST_BDY_SECRET]=0
             else:
-                self._update_players()
+                self._update_players_after_action()
                 
     def _after_score_step(self):
         #if everybody who needs to has chosen a secret region, do the scoring
@@ -1124,9 +1134,20 @@ class ElGrandeGameState(pyspiel.State):
             self._cur_player = pyspiel.PlayerId.TERMINAL
             self._is_terminal=True
         else:
-            self._update_players()
+            self._update_players_after_action()
+
+    def _update_players_after_power(self):
+        powcards = {i:self._pcard_state[i] for i in range(_NUM_POWER_CARDS) if self._pcard_state[i]>0} 
+        order=[]
+        keys = sorted(powcards.keys(),reverse=True)
+        for i in keys:
+            player_id = int(np.log2(powcards[i]))
+            order = order + [player_id]
+        self._cur_player=order[0]
+        self._playersleft=order
+        self._turn_state[_ST_TN_PHASE]=self._get_phaseid('action')
         
-    def _update_players(self):
+    def _update_players_after_action(self):
         #get everything ready for next round
         powcards = {i:self._pcard_state[i] for i in range(_NUM_POWER_CARDS) if self._pcard_state[i]>0} 
         lowest = sorted(powcards.keys())[0]
@@ -1478,7 +1499,8 @@ class ElGrandeGame(pyspiel.Game):
         if game_state == '' and game_state_json == '':
             self._game_state=''
         elif game_state_json != '':
-            self._game_state = game_state_json
+            #parameter is actually a string - convert to json doc for compatibility
+            self._game_state = json.loads(game_state_json)
         else:
             gamehistdb = couch['game_history']
             self._game_state = gamehistdb[game_state]
