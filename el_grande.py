@@ -176,6 +176,12 @@ class ElGrandeGameState(pyspiel.State):
         else:
             return pieces._CARDS[pieces._CARDTRACK[ccard[0]]]
 
+    def _get_round(self):
+        return self._turn_state[_ST_TN_ROUND]
+
+    def _get_current_phase_name(self):
+        return _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]
+
     def _update_current_card_status(self,status):
         #work out which is the current action card, and set it to new status
         ccard = [c for c in range(_NUM_ACTION_CARDS) if self._acard_state[c] == _ST_AC_CHOSEN]
