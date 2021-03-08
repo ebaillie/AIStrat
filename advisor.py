@@ -18,8 +18,8 @@ couchip = '127.0.0.1:5984'
 credentials = 'admin:elderberry'
 couch = couchdb.Server('http://'+credentials+'@'+couchip)
 #list of advice actions which should be generated for each relevant phase
-adviceTypes = {'power':['opponent_report','score_predictions','explain_cards','home_report'], 
-  'action':['caballero_value','card_action_value','opponent_report','score_predictions','explain_cards','home_report','suggestion'],
+adviceTypes = {'start':['explain_cards','opponent_report','home_report'],
+  'action':['caballero_value','card_action_value','score_predictions','alert','suggestion'],
   'scoring':['castillo','opponent_report','score_predictions']}
 #regions, as in TTS code
 regions=["Galicia","Pais Vasco","Aragon","Cataluna","Castilla la Vieja","Castilla la Nueva","Valencia","Sevilla","Granada"]
@@ -43,7 +43,7 @@ def processDBInput(inputData, gameHistory):
 def generateAdviceFor(jsonObject, gameHistory):
   print('advice')
   assert(jsonObject.get('turninfo','')!='')
-  thisGame = el_grande.ElGrandeGame({"game_state_json":pySpiel.GameParameter(json.dumps(jsonObject))})
+  thisGame = el_grande.ElGrandeGame({"game_state_json":pyspiel.GameParameter(json.dumps(jsonObject))})
   thisGameState = thisGame.new_initial_state()
   
   if jsonObject['turninfo']['phase']=='start':
@@ -56,7 +56,7 @@ def generateAdviceFor(jsonObject, gameHistory):
     relevantAdvice = adviceTypes.get(phase,[])
     for atype in relevantAdvice:
       print(atype)
-      proc = Process(target=makeAdvice,args=(player, atype, gameState, jsonObject, gameHistory))
+      proc = Process(target=makeAdvice,args=(player, atype, thisGameState, jsonObject, gameHistory))
       proc.start()
       proc.join()
       
@@ -65,19 +65,21 @@ def makeAdvice(player, atype, gameState, jsonObject, gameHistory):
     if atype=='caballero_value':
       advice = caballeroAdvice(player, jsonObject)
     elif atype=='card_action_value':
-      advice = cardActionValueAdvice(player, jsonObject)
+      advice = cardActionValueAdvice(player, gameState)
     elif atype=='castillo':
       advice = castilloAdvice(player, jsonObject)
     elif atype=='explain_cards':
       advice = explainCardsAdvice(player, jsonObject)
     elif atype=='home_report':
-      advice = homeReportAdvice(player, jsonObject, gameHistory)
+      advice = homeReportAdvice(player, jsonObject, gameState, gameHistory)
     elif atype=='opponent_report':
       advice = opponentReportAdvice(player, jsonObject, gameHistory)
     elif atype=='score_predictions':
       advice = scorePredictionsAdvice(player, jsonObject)
     elif atype=='suggestion':
       advice = suggestionAdvice(player, jsonObject)
+    elif atype=='alert':
+      advice = alertAdvice(player, jsonObject)
       
     try:
       adviceDB = couch['game_advice']
@@ -98,7 +100,7 @@ def caballeroAdvice(player,jsonObject):
     return advice
  
 #possible point value of playing this card in this round
-def cardActionValueAdvice(player,jsonObject):
+def cardActionValueAdvice(player,gameState):
     advice = initAdviceStructure(player, 'card_action_value', jsonObject)
     return advice
  
@@ -135,15 +137,12 @@ def explainCardsAdvice(player,jsonObject):
     return advice
  
 #whether player's home region is 'under threat' or they have already lost number 1 status there
-def homeReportAdvice(player, jsonObject, gameHistory):
+def homeReportAdvice(player, jsonObject, gameState, gameHistory):
     advice = initAdviceStructure(player, 'home_report', jsonObject)
-    home = jsonObject['pieces'][player]['grande']
-    round = jsonObject['turninfo']['round']
-    homecabs={}
-    for player in gameHistory[jsonObject['name']]:
-        homecabs[player] = gameHistory[jsonObject['name']][player].get(home,np.zeros(_ROUND_COUNT))
-        homecabs[player][round]=jsonObject['pieces'][player].get(home,0)
-
+    player_id = gameState._get_pid(player)
+    
+    home = gameState._grande_region(player_id)
+    round = gameState._get_round()
     #TODO: check for control of region
     #check for recent activity from not-you
     #check if it's in anyone's interest to overtake you
@@ -164,6 +163,11 @@ def suggestionAdvice(player, jsonObject):
     advice = initAdviceStructure(player, 'suggestion', jsonObject)
     return advice
 
+#specific alert of problems that might come up
+def suggestionAdvice(player, jsonObject):
+    advice = initAdviceStructure(player, 'alert', jsonObject)
+    return advice
+
 #insert information about caballero movements in a way that will be
 #easy to interpret for the advisor
 def addRelevantGameHistory(gameState, gameHistory, gameName):
@@ -172,7 +176,7 @@ def addRelevantGameHistory(gameState, gameHistory, gameName):
     regions = pieces._NUM_REGIONS
     players = gameState._num_players
     
-    localHistory = gameHistory.get(gameName,np.zeros((regions,players,_ROUND_COUNT))
+    localHistory = gameHistory.get(gameName,np.zeros((regions,players,_ROUND_COUNT)))
     localHistory[:,:,round] = gameState._board_state[:regions,:players]
     gameHistory[gameName]=localHistory
     #hoping the info is correctly stored in shared memory 

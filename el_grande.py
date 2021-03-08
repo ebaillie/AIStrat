@@ -161,6 +161,10 @@ class ElGrandeGameState(pyspiel.State):
     
     def _get_pid(self,playerName):
         return self._players.index(playerName)
+    
+    def _get_player_name(self,pid):
+        assert(pid<self._num_players)
+        return self._players[pid]
 
     def _get_cid(self,cardName):
         return pieces._CARDS[cardName]['idx']
@@ -306,6 +310,9 @@ class ElGrandeGameState(pyspiel.State):
     def _region_has_grande(self,region_id,player_id):
         return self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_GRANDE_KING] & (pow(2,player_id)) == (pow(2,player_id))
 
+    def _grande_region(self,player_id):
+        return np.where(self._board_state[:,_ST_BDY_GRANDE_KING]& (pow(2,player_id))>0)[0][0]
+    
     def _region_cabcount(self,region_id,player_id):
         return self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_CABS + player_id]
     
@@ -674,11 +681,9 @@ class ElGrandeGameState(pyspiel.State):
         if not choice_step:
             self._set_rewards(final_scores)
 
-    def _score_one_region(self,region,top_only=False):
+    def _rank_region(self, region):
         assert(region>=0 and region<=pieces._NUM_EXT_REGIONS) 
         cab_counts = self._board_state[_ST_BDX_REGIONS+region,_ST_BDY_CABS : (_ST_BDY_CABS+self._num_players) ]
-    
-        #rank and score the counts
         ranks={}
         for idx in range(len(cab_counts)):
             cp=cab_counts[idx]
@@ -698,7 +703,14 @@ class ElGrandeGameState(pyspiel.State):
                 if anchor_rank>0:
                     ranks[idx]=anchor_rank
     
-        #score now for all players
+
+    def _score_one_region(self,region,top_only=False):
+        assert(region>=0 and region<=pieces._NUM_EXT_REGIONS) 
+        cab_counts = self._board_state[_ST_BDX_REGIONS+region,_ST_BDY_CABS : (_ST_BDY_CABS+self._num_players) ]
+    
+        #rank and score the counts
+        ranks = self._rank_region(region)
+        #score for all players
         final_scores=np.full(self._num_players,0)
         for k in ranks.keys():
             if ranks[k]>0 and ranks[k]<=3:
