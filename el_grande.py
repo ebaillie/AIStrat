@@ -702,7 +702,7 @@ class ElGrandeGameState(pyspiel.State):
                             ranks[idx]=ranks[idx]+1
                 if anchor_rank>0:
                     ranks[idx]=anchor_rank
-    
+        return ranks 
 
     def _score_one_region(self,region,top_only=False):
         assert(region>=0 and region<=pieces._NUM_EXT_REGIONS) 

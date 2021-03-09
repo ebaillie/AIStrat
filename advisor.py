@@ -14,19 +14,33 @@ import el_grande_pieces as pieces
 
 from multiprocessing import Process, Manager
 
+_ROUND_COUNT=10
+_ADV_CURRENT = 0 #produce advice for current player
+_ADV_EACH = 1 #produce separate advice for each player in game
+_ADV_ALL = 2 #produce one advice accessible by all players
+
 couchip = '127.0.0.1:5984'
 credentials = 'admin:elderberry'
 couch = couchdb.Server('http://'+credentials+'@'+couchip)
 #list of advice actions which should be generated for each relevant phase
-adviceTypes = {'start':['explain_cards','opponent_report','home_report'],
-  'action':['caballero_value','card_action_value','score_predictions','alert','suggestion'],
-  'scoring':['castillo','opponent_report','score_predictions']}
+#stored as tuple: (type, phase, forPlayer)
+adviceList = [('explain_cards','start',_ADV_ALL),
+                ('opponent_report','start',_ADV_ALL),
+                ('opponent_report','scoring',_ADV_ALL),
+                ('home_report','start',_ADV_ALL),
+                ('home_report','action',_ADV_CURRENT),
+                ('caballero_value','action',_ADV_ALL),
+                ('card_action_value','action',_ADV_CURRENT),
+                ('score_predictions','action',_ADV_CURRENT),
+                ('suggestion','action',_ADV_CURRENT),
+                ('castillo','scoring',_ADV_EACH),
+                ('alert','action',_ADV_EACH)]
+
 #regions, as in TTS code
 regions=["Galicia","Pais Vasco","Aragon","Cataluna","Castilla la Vieja","Castilla la Nueva","Valencia","Sevilla","Granada"]
 extRegions=regions.copy()
 extRegions.append("Castillo")
 
-_ROUND_COUNT=10
 
 #invoked when the Flask listener detects data coming in to the db
 #assume that the data is 'body' text about to be forwarded to db - we inspect this to see what sort of
@@ -39,7 +53,6 @@ def processDBInput(inputData, gameHistory):
     generateAdviceFor(jsonObject, gameHistory)
     
 #input data for a turn and phase - generate some advice, depending on what turn, phase and player we have here
-#structure of jsonObject should be game_history
 def generateAdviceFor(jsonObject, gameHistory):
   print('advice')
   assert(jsonObject.get('turninfo','')!='')
@@ -54,32 +67,40 @@ def generateAdviceFor(jsonObject, gameHistory):
     player=jsonObject['turninfo']['playersleft'][0]
     phase=jsonObject['turninfo']['phase']
     relevantAdvice = adviceTypes.get(phase,[])
-    for atype in relevantAdvice:
-      print(atype)
-      proc = Process(target=makeAdvice,args=(player, atype, thisGameState, jsonObject, gameHistory))
-      proc.start()
-      proc.join()
+    for adv in adviceList:
+      if adv[1]==phase:
+        print(adv[0])
+        if adv[2]==_ADV_EACH:
+            for p in jsonObject['players']:
+                proc = Process(target=makeAdvice,args=(p, adv[0], thisGameState, jsonObject, gameHistory[jsonObject['name']]))
+                proc.start()
+                proc.join()
+        else:
+            p = player if adv[2]==_ADV_CURRENT else ''
+            proc = Process(target=makeAdvice,args=(p, adv[0], thisGameState, jsonObject, gameHistory[jsonObject['name']]))
+            proc.start()
+            proc.join()
       
  #generate specified advice for specified player/round/phase based on this gameState or jsonObject
-def makeAdvice(player, atype, gameState, jsonObject, gameHistory):
+def makeAdvice(player, atype, gameState, jsonObject, thisHistory):
     if atype=='caballero_value':
       advice = caballeroAdvice(player, jsonObject)
     elif atype=='card_action_value':
-      advice = cardActionValueAdvice(player, gameState)
+      advice = cardActionValueAdvice(player, gameState, jsonObject)
     elif atype=='castillo':
       advice = castilloAdvice(player, jsonObject)
     elif atype=='explain_cards':
       advice = explainCardsAdvice(player, jsonObject)
     elif atype=='home_report':
-      advice = homeReportAdvice(player, jsonObject, gameState, gameHistory)
+      advice = homeReportAdvice(player, gameState, thisHistory, jsonObject)
     elif atype=='opponent_report':
-      advice = opponentReportAdvice(player, jsonObject, gameHistory)
+      advice = opponentReportAdvice(player, gameState, thisHistory, jsonObject)
     elif atype=='score_predictions':
       advice = scorePredictionsAdvice(player, jsonObject)
     elif atype=='suggestion':
       advice = suggestionAdvice(player, jsonObject)
     elif atype=='alert':
-      advice = alertAdvice(player, jsonObject)
+      advice = alertAdvice(player, gameState, thisHistory, jsonObject)
       
     try:
       adviceDB = couch['game_advice']
@@ -100,7 +121,7 @@ def caballeroAdvice(player,jsonObject):
     return advice
  
 #possible point value of playing this card in this round
-def cardActionValueAdvice(player,gameState):
+def cardActionValueAdvice(player,gameState, jsonObject):
     advice = initAdviceStructure(player, 'card_action_value', jsonObject)
     return advice
  
@@ -137,20 +158,52 @@ def explainCardsAdvice(player,jsonObject):
     return advice
  
 #whether player's home region is 'under threat' or they have already lost number 1 status there
-def homeReportAdvice(player, jsonObject, gameState, gameHistory):
+def homeReportAdvice(player, gameState, thisHistory, jsonObject):
     advice = initAdviceStructure(player, 'home_report', jsonObject)
     player_id = gameState._get_pid(player)
-    
     home = gameState._grande_region(player_id)
     round = gameState._get_round()
-    #TODO: check for control of region
+    #check for control of region, right now
+    advice['advice']['control'] = (gameState._rank_region(home)[player_id] == 1)
+    
     #check for recent activity from not-you
+    moves = thisHistory['pieces'][home,:,round]-thisHistory['pieces'][home,:,(round-1)]
+    advice['advice']['moves'] = [gameState._get_player_name(i) for i in range(gameState._num_players) if moves[i]>0 and i!=player_id]
+
     #check if it's in anyone's interest to overtake you
+    targeters=[]
+    for p in range(gameState._num_players):
+        if p!=player_id:
+            target = reportTarget(gameState, p, home)
+            if target>0:
+                targeters=targeters+[p]
+    advice['advice']['targeters']=[gameState._get_player_name(t) for t in targeters]
     return advice
  
 #regions where each player has been scoring historically, whether it's first/second/third, and how many areas the player is scoring.
-def opponentReportAdvice(player, jsonObject, gameHistory):
+def opponentReportAdvice(player, gameState, thisHistory, jsonObject):
     advice = initAdviceStructure(player, 'opponent_report', jsonObject)
+    regions = pieces._NUM_EXT_REGIONS
+    for r in range(regions):
+        advice['advice'][pieces._REGIONS[r]]={'pieces':{},'ranks':{}}
+        for p in range(gameState._num_players):
+            currentPieces=gameState._board_state[r,p]
+            placements=np.full(gameState._get_round()+1,0)
+            ranks=[]
+            trackCabs=0
+            for rd in range(1,gameState._get_round()+1):
+                placed=thisHistory['pieces'][r,p,rd] - trackCabs
+                if placed>0:
+                    placed = max(placed,(currentPieces-trackCabs))
+                    placements[rd]=placed
+                    trackCabs += placed
+                if el_grande._SCORING_ROUND[rd]:
+                    ranks = ranks + thisHistory['ranks'][r,p,rd]
+                pname=gameState._get_player_name(p)
+            if currentPieces>0:
+                advice['advice'][pieces._REGIONS[r]]['pieces'][pname]=placements.tolist()
+            advice['advice'][pieces._REGIONS[r]]['ranks'][pname]=ranks
+
     return advice
  
 #predicted scores for each player based on this round
@@ -164,8 +217,19 @@ def suggestionAdvice(player, jsonObject):
     return advice
 
 #specific alert of problems that might come up
-def suggestionAdvice(player, jsonObject):
+def alertAdvice(player, gameState, thisHistory, jsonObject):
     advice = initAdviceStructure(player, 'alert', jsonObject)
+    #home region lost this turn?
+    player_id = gameState._get_pid(player)
+    home = gameState._grande_region(player_id)
+    round = gameState._get_round()
+    #check for control of region, right now
+    hasControl = (gameState._rank_region(home)[player_id] == 1)
+    if not hasControl:
+        #was control just lost?
+        lastControl = thisHistory["ranks"][home,player_id,(round-1)] == 1
+        if lastControl:
+            advice['advice']['alert']='Lost control of home region' 
     return advice
 
 #insert information about caballero movements in a way that will be
@@ -175,13 +239,65 @@ def addRelevantGameHistory(gameState, gameHistory, gameName):
     round = gameState._get_round()
     regions = pieces._NUM_REGIONS
     players = gameState._num_players
-    
-    localHistory = gameHistory.get(gameName,np.zeros((regions,players,_ROUND_COUNT)))
-    localHistory[:,:,round] = gameState._board_state[:regions,:players]
+   
+    localHistory = gameHistory.get(gameName,{"pieces":np.zeros((regions,players,_ROUND_COUNT)),"ranks":np.zeros((regions,players,_ROUND_COUNT))}) 
+    localHistory["pieces"][:,:,round] = gameState._board_state[:regions,:players]
+    for r in range(regions):
+        #rank everything last by default
+        rd=gameState._rank_region(r)
+        ranks=[rd.get(i,players) for i in range(players)]
+        localHistory["ranks"][r,:,round]=ranks
+
     gameHistory[gameName]=localHistory
     #hoping the info is correctly stored in shared memory 
     return
 
+#return in what order this region should be targeted by this player, using greedy algorithm
+#don't worry about allowable placement - this is for goal setting
+def reportTarget(gameState,player,region,stopAt=5):
+    regions = pieces._NUM_EXT_REGIONS
+    testPieces = np.full(regions,0) 
+    for test in range(stopAt):
+        #each round, work out how best to improve the point gap
+        testState = gameState.clone()
+        testState._board_state[:regions,player]+=testPieces
+        defaultPoints=[testState._score_one_region(r) for r in range(regions)]
+        defaultPointGap = getPointGap(sum(defaultPoints),player)
+        bestPointGap = defaultPointGap #floor for improvement
+        bestRegion = -1
+        
+        testState._board_state[:regions,player]+=1
+        testPoints=[testState._score_one_region(r) for r in range(regions)]
+        for r in range(regions):
+            #check the effect on the point gap of subbing in each testPoints in turn
+            testArray=[testPoints[reg] if reg==r else defaultPoints[reg] for reg in range(regions)]
+            pointGap = getPointGap(sum(testArray),player)
+            if pointGap>bestPointGap or (pointGap==bestPointGap and r==region):
+                bestPointGap=pointGap
+                bestRegion=r
+        #once we identified best region for this round, stop if it's the one we want
+        #otherwise register this in the array and keep going
+        if bestRegion==region:
+            return test
+        else:
+            testPieces[bestRegion]+=1
+
+    #if we finished the loop without finding anything, return -1
+    return -1
+
+#if player is first, pointGap is +ve or 0 distance to next player
+#if player is not first, pointGap is -ve distance to top player
+def getPointGap(pointArray, player):
+    top = max(pointArray)
+    next = max([p for p in pointArray if p!=top])
+    if pointArray[player]==top:
+        #if equal firsts, gap is zero
+        if len(np.where(pointArray==top)[0])>0:
+            return 0
+        else:
+            return top-next
+    else:
+        return pointArray[player]-top
  
 #generate all region ranking data for one region
 #regionName - string
