@@ -24,7 +24,7 @@ credentials = 'admin:elderberry'
 couch = couchdb.Server('http://'+credentials+'@'+couchip)
 #list of advice actions which should be generated for each relevant phase
 #stored as tuple: (type, phase, forPlayer)
-adviceList = [('explain_cards','start',_ADV_ALL),
+adviceList = [('explain_cards','power',_ADV_ALL),
                 ('opponent_report','start',_ADV_ALL),
                 ('opponent_report','scoring',_ADV_ALL),
                 ('home_report','start',_ADV_EACH),
@@ -61,12 +61,11 @@ def generateAdviceFor(jsonObject, gameHistory):
   
   if jsonObject['turninfo']['phase']=='start':
     addRelevantGameHistory(thisGameState, gameHistory,jsonObject['name'])
-    print("Game History Length {0}".format(len(gameHistory)))
+    print("Game History P0 pieces {0}".format(gameHistory[jsonObject['name']]['pieces'][:,0,:]))
 
   if len(jsonObject['turninfo']['playersleft'])>0:
     player=jsonObject['turninfo']['playersleft'][0]
     phase=jsonObject['turninfo']['phase']
-    relevantAdvice = adviceTypes.get(phase,[])
     for adv in adviceList:
       if adv[1]==phase:
         print(adv[0])
@@ -155,6 +154,13 @@ def castilloAdvice(player,jsonObject):
 #human-generated explanations of use of current cards
 def explainCardsAdvice(player,jsonObject):
     advice = initAdviceStructure(player, 'explain_cards', jsonObject)
+    adv_text=""
+    for deck in jsonObject['cards']:
+        card_id = jsonObject['cards'][deck]
+        card_title = str.split(pieces._CARDS[card_id]["text"],":")[0]
+        exp_string = pieces._CARDS[card_id]["explain"]
+        adv_text = adv_text+card_title+": "+exp_string+"\n"
+    advice['advice']=adv_text
     return advice
  
 #whether player's home region is 'under threat' or they have already lost number 1 status there
@@ -164,7 +170,7 @@ def homeReportAdvice(player, gameState, thisHistory, jsonObject):
     home = gameState._grande_region(player_id)
     round = gameState._get_round()
     #check for control of region, right now
-    advice['advice']['control'] = (gameState._rank_region(home)[player_id] == 1)
+    advice['advice']['control'] = (gameState._rank_region(home).get(player_id,-1) == 1)
     
     #check for recent activity from not-you
     moves = thisHistory['pieces'][home,:,round]-thisHistory['pieces'][home,:,(round-1)]
@@ -194,12 +200,12 @@ def opponentReportAdvice(player, gameState, thisHistory, jsonObject):
             for rd in range(1,gameState._get_round()+1):
                 placed=thisHistory['pieces'][r,p,rd] - trackCabs
                 if placed>0:
-                    placed = max(placed,(currentPieces-trackCabs))
+                    placed = min(placed,(currentPieces-trackCabs))
                     placements[rd]=placed
                     trackCabs += placed
                 if el_grande._SCORING_ROUND[rd]:
-                    ranks = ranks + thisHistory['ranks'][r,p,rd]
-                pname=gameState._get_player_name(p)
+                    ranks = ranks + [thisHistory['ranks'][r,p,rd]]
+            pname=gameState._get_player_name(p)
             if currentPieces>0:
                 advice['advice'][pieces._REGIONS[r]]['pieces'][pname]=placements.tolist()
             advice['advice'][pieces._REGIONS[r]]['ranks'][pname]=ranks
@@ -224,7 +230,7 @@ def alertAdvice(player, gameState, thisHistory, jsonObject):
     home = gameState._grande_region(player_id)
     round = gameState._get_round()
     #check for control of region, right now
-    hasControl = (gameState._rank_region(home)[player_id] == 1)
+    hasControl = (gameState._rank_region(home).get(player_id,-1) == 1)
     if not hasControl:
         #was control just lost?
         lastControl = thisHistory["ranks"][home,player_id,(round-1)] == 1
@@ -237,7 +243,7 @@ def alertAdvice(player, gameState, thisHistory, jsonObject):
 def addRelevantGameHistory(gameState, gameHistory, gameName):
 
     round = gameState._get_round()
-    regions = pieces._NUM_REGIONS
+    regions = pieces._NUM_EXT_REGIONS
     players = gameState._num_players
    
     localHistory = gameHistory.get(gameName,{"pieces":np.zeros((regions,players,_ROUND_COUNT)),"ranks":np.zeros((regions,players,_ROUND_COUNT))}) 
