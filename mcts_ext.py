@@ -260,7 +260,7 @@ class MCTSBot(pyspiel.Bot):
 
   def multi_step(self, state):
     """Returns bot's next action at given state.
-       Also includes string of best children until the next player is up"""
+       Also includes string of best children until the next player is up and value of multi-step"""
 
     t1 = time.time()
     root = self.mcts_search(state)
@@ -283,20 +283,48 @@ class MCTSBot(pyspiel.Bot):
 
     mcts_action = best.action
 
-    multi_step = [best.action] +self._player_path(best.player,best.best_child())
+    returns = [(best.action,(best.total_reward/best.explore_count))] +self._player_path(best.player,best.best_child())
 
-    return mcts_action, multi_step
+    return mcts_action, [r[0] for r in returns], [r[1] for r in returns]
 
   def _player_path(self,for_player,node):
     if node.player!=for_player:
       return []
     elif len(node.children)==0:
-      return [node.action]
+      return [(node.action,(node.total_reward/node.explore_count))]
     else:
-      return [node.action] + self._player_path(for_player,node.best_child())
+      return [(node.action,(node.total_reward/node.explore_count))] + self._player_path(for_player,node.best_child())
+
+  def step_with_policy(self, state):
+    """Returns bot's policy and action at given state."""
+    t1 = time.time()
+    root = self.mcts_search(state)
+
+    best = root.best_child()
+
+    if self.verbose:
+      seconds = time.time() - t1
+      print("Finished {} sims in {:.3f} secs, {:.1f} sims/s".format(
+          root.explore_count, seconds, root.explore_count / seconds))
+      print("Root:")
+      print(root.to_str(state))
+      print("Children:")
+      print(root.children_str(state))
+      if best.children:
+        chosen_state = state.clone()
+        chosen_state.apply_action(best.action)
+        print("Children of chosen:")
+        print(best.children_str(chosen_state))
+
+    mcts_action = best.action
+
+    policy = [(action, (1.0 if action == mcts_action else 0.0))
+              for action in state.legal_actions(state.current_player())]
+
+    return policy, mcts_action
 
   def step(self, state):
-    return self.step_with_policy(state)[0]
+    return self.step_with_policy(state)[1]
 
   def _apply_tree_policy(self, root, state):
     """Applies the UCT policy to play the game until reaching a leaf node.

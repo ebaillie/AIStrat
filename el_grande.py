@@ -292,7 +292,7 @@ class ElGrandeGameState(pyspiel.State):
         return self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_GRANDE_KING] & (pow(2,_ST_MASK_KING)) == (pow(2,_ST_MASK_KING))
     
     def _king_region(self):
-        return np.where(self._board_state[:,_ST_BDY_GRANDE_KING]& (pow(2,_ST_MASK_KING))>0)[0][0]
+        return int(np.where(self._board_state[:,_ST_BDY_GRANDE_KING]& (pow(2,_ST_MASK_KING))>0)[0][0])
     
     def _state_add_cabs_grandes(self,data):
         for player_name in data.keys():
@@ -311,7 +311,7 @@ class ElGrandeGameState(pyspiel.State):
         return self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_GRANDE_KING] & (pow(2,player_id)) == (pow(2,player_id))
 
     def _grande_region(self,player_id):
-        return np.where(self._board_state[:,_ST_BDY_GRANDE_KING]& (pow(2,player_id))>0)[0][0]
+        return int(np.where(self._board_state[:,_ST_BDY_GRANDE_KING]& (pow(2,player_id))>0)[0][0])
     
     def _region_cabcount(self,region_id,player_id):
         return self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_CABS + player_id]
@@ -555,7 +555,7 @@ class ElGrandeGameState(pyspiel.State):
         if self._region_has_king(region_id):
             retstr = retstr + " K"
         retstr = retstr.ljust(18," ")+ "-  " + pieces._REGIONS[region_id].rjust(18," ")
-        if region_id <= pieces._NUM_EXT_REGIONS:
+        if region_id < _NUM_EXT_REGIONS:
             retstr = retstr + str(self._rewards[region_id])
         return retstr
     
@@ -628,15 +628,15 @@ class ElGrandeGameState(pyspiel.State):
         choice_step=False
         region=details.get('region','')
         if region=='fours':
-            for i in range(pieces._NUM_EXT_REGIONS): 
+            for i in range(_NUM_EXT_REGIONS): 
                 if self._rewards[i][0]==4:
                     final_scores = final_scores + self._score_one_region(i)
         elif region=='fives':
-            for i in range(pieces._NUM_EXT_REGIONS):
+            for i in range(_NUM_EXT_REGIONS):
                 if self._rewards[i][0]==5:
                     final_scores = final_scores + self._score_one_region(i)
         elif region=='sixsevens':
-            for i in range(pieces._NUM_EXT_REGIONS):
+            for i in range(_NUM_EXT_REGIONS):
                 if self._rewards[i][0]==6 or self._rewards[i][0]==7:
                     final_scores = final_scores + self._score_one_region(i)
         elif region=='castillo':
@@ -644,7 +644,7 @@ class ElGrandeGameState(pyspiel.State):
         elif region=='locab':
             loregions=[]
             currentlow=100
-            for i in range(pieces._NUM_EXT_REGIONS):
+            for i in range(_NUM_EXT_REGIONS):
                 this_count=sum(self._board_state[i,:self._num_players])
                 if this_count<currentlow and this_count>0:
                     currentlow=this_count
@@ -656,7 +656,7 @@ class ElGrandeGameState(pyspiel.State):
         elif region=='hicab':
             hiregions=[]
             currenthigh=0
-            for i in range(pieces._NUM_EXT_REGIONS):
+            for i in range(_NUM_EXT_REGIONS):
                 this_count=sum(self._board_state[i,:self._num_players])
                 if this_count>currenthigh:
                     currenthigh=this_count
@@ -675,14 +675,14 @@ class ElGrandeGameState(pyspiel.State):
                 final_scores = final_scores + self._score_one_region(regions[0])
         else:
             #last possibility is the one where we just score the top in all regions
-            for i in range(pieces._NUM_EXT_REGIONS):
+            for i in range(_NUM_EXT_REGIONS):
                 final_scores = final_scores + self._score_one_region(i,True)
                 
         if not choice_step:
             self._set_rewards(final_scores)
 
     def _rank_region(self, region):
-        assert(region>=0 and region<=pieces._NUM_EXT_REGIONS) 
+        assert(region>=0 and region<_NUM_EXT_REGIONS) 
         cab_counts = self._board_state[_ST_BDX_REGIONS+region,_ST_BDY_CABS : (_ST_BDY_CABS+self._num_players) ]
         ranks={}
         for idx in range(len(cab_counts)):
@@ -705,7 +705,7 @@ class ElGrandeGameState(pyspiel.State):
         return ranks 
 
     def _score_one_region(self,region,top_only=False):
-        assert(region>=0 and region<=pieces._NUM_EXT_REGIONS) 
+        assert(region>=0 and region<_NUM_EXT_REGIONS) 
         cab_counts = self._board_state[_ST_BDX_REGIONS+region,_ST_BDY_CABS : (_ST_BDY_CABS+self._num_players) ]
     
         #rank and score the counts
@@ -1147,8 +1147,13 @@ class ElGrandeGameState(pyspiel.State):
         self._board_state[:,_ST_BDY_SECRET]=0 
         if self._turn_state[_ST_TN_ROUND]==self._end_turn:
             # first player is +ve, second is 0, subsequent are -ve 
-            sscore = sorted(final_scores,reverse=True)[1]
-            self._win_points = final_scores - sscore
+            fscore=max(final_scores)
+            sscore=0
+            if len(final_scores)>1: #always true except in test games
+                sscore = sorted(final_scores,reverse=True)[1]
+            scorepoint=(fscore+sscore)/2
+            #players are scored relative to the midpoint between first and second place
+            self._win_points = final_scores - scorepoint
             self._cur_player = pyspiel.PlayerId.TERMINAL
             self._is_terminal=True
         else:
@@ -1188,6 +1193,24 @@ class ElGrandeGameState(pyspiel.State):
                 self._acard_state[i] = _ST_AC_DONE
         self._acard_state[-1] = _ST_AC_DEALT
 
+    def castillo_game_string(self):
+        #translate game state into CastilloGame format, for running tiny sims
+        state_vals={"players":self._num_players,"rewards":self._rewards,"king":self._king_region()+1}
+        #put player state into castillo game state in order, starting from current player
+        #region 0 is the castillo
+        board=np.full(self._num_players*_NUM_EXT_REGIONS,0)
+        grandes=[]
+        idx=0 #player id as in castillo game
+        for p in self._playersleft+self._playersdone:
+            for r in range(_NUM_REGIONS):
+                board[(r+1)*self._num_players+idx] = self._board_state[r,p]    
+            #castillo
+            board[idx] = self._board_state[pieces._CASTILLO,p]
+            grandes += [self._grande_region(p)+1]
+            idx +=1
+        state_vals["board"]="".join([chr(ord('A')+b) for b in board])
+        state_vals["grandes"]=grandes
+        return json.dumps(state_vals) 
 
     # OpenSpiel (PySpiel) API functions are below. These need to be provided by
     # every game. Some not-often-used methods have been omitted.
@@ -1350,7 +1373,7 @@ class ElGrandeGameState(pyspiel.State):
             self._after_action_step() 
     
     
-    def action_to_string(self, arg0, arg1=None):
+    def action_to_string(self, arg0, arg1=None, withPlayer=True):
         """Action -> string. Args either (player, action) or (action)."""
         player = self.current_player() if arg1 is None else arg0
         action = arg0 if arg1 is None else arg1
@@ -1391,8 +1414,11 @@ class ElGrandeGameState(pyspiel.State):
             toRegion = ((action- _ACT_CAB_MOVES)%(_NUM_CAB_AREAS * _MAX_PLAYERS))//_MAX_PLAYERS
             ofPlayer = (action- _ACT_CAB_MOVES)%_MAX_PLAYERS
             actionString = self._players[ofPlayer] + " caballero from " + pieces._REGIONS[fromRegion] + " to " + pieces._REGIONS[toRegion]        
-        
-        return "{} ({})".format(player,actionString)
+       
+        if withPlayer: 
+            return "{} ({})".format(self._players[player],actionString)
+        else:
+            return actionString
 
     def is_terminal(self):
         return self._is_terminal

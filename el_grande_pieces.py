@@ -15,7 +15,7 @@ _CASTILLO = 9 #castillo index
 _COURT = 10 #court index
 _PROVINCE = 11 #province index
 
-_NUM_EXT_REGIONS = _CASTILLO #regions including castillo
+_NUM_EXT_REGIONS = _NUM_REGIONS + 1 #regions including castillo
 _NUM_CAB_AREAS = _NUM_EXT_REGIONS + 2 #areas caballeros can be placed, including court and province
 _NUM_FULL_DECKS = 4 #decks with multiple cards in them
 _NUM_PLAYABLE_DECKS = 5 #include also the single-card 'Deck5'

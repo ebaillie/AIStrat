@@ -2,18 +2,47 @@ import copy
 import pickle
 
 import numpy as np
+import json
 
 import pyspiel
+import el_grande_pieces as pieces
 
 _MAX_PLAYERS = 5
-_NUM_REGIONS = 9
+_NUM_REGIONS = pieces._NUM_REGIONS
 _ZERO_CHAR = 'A'
 #region order "Aragon","Castilla la Nueva","Castilla la Vieja","Cataluna","Galicia","Granada","Pais Vasco","Sevilla","Valencia"
-_DEFAULT_REGION_REWARDS = [(5,4,1),(7,4,2),(6,4,2),(4,2,1),(4,2,0),(6,3,1),(5,3,1),(4,3,1),(5,3,2)]
-_DEFAULT_PLAYERS = 4
-_DEFAULT_BOARD = 'BCDEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
-_DEFAULT_GRANDES = [1,1,1,1]
-_DEFAULT_KING = 1
+#_DEFAULT_REGION_REWARDS = [(5,4,1),(7,4,2),(6,4,2),(4,2,1),(4,2,0),(6,3,1),(5,3,1),(4,3,1),(5,3,2)]
+#_DEFAULT_PLAYERS = 4
+#_DEFAULT_BOARD = 'BCDEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+#_DEFAULT_GRANDES = [1,1,1,1]
+#_DEFAULT_KING = 1
+_DEFAULT_STATE = '{"players":4,"rewards":{{5,4,1},{7,4,2},{6,4,2},{4,2,1},{4,2,0},{6,3,1},{5,3,1},{4,3,1},{5,3,2}},"board":"BBBBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","grandes":{1,1,1,1},"king":1}'
+
+
+_GAME_TYPE = pyspiel.GameType(
+    short_name="castillo_game",
+    long_name="El Grande Castillo Game",
+    dynamics=pyspiel.GameType.Dynamics.SEQUENTIAL,
+    chance_mode=pyspiel.GameType.ChanceMode.DETERMINISTIC,
+    information=pyspiel.GameType.Information.IMPERFECT_INFORMATION, 
+    utility=pyspiel.GameType.Utility.GENERAL_SUM,
+    reward_model=pyspiel.GameType.RewardModel.TERMINAL,
+    max_num_players=_MAX_PLAYERS,
+    min_num_players=2,
+    provides_information_state_string=False,
+    provides_information_state_tensor=True,
+    provides_observation_string=False,
+    provides_observation_tensor=False,
+    provides_factored_observation_string=False)
+_GAME_INFO = pyspiel.GameInfo(
+    num_distinct_actions=_NUM_REGIONS,
+    max_chance_outcomes=0,
+    num_players=5,
+    min_utility=0.0,
+    max_utility=1.0,
+    utility_sum=1.0,
+    max_game_length=_MAX_PLAYERS)
+
 
 class CastilloGameState(pyspiel.State):
     """El Grande Castillo Game - subgame of El Grande which decides on the optimum positioning of
@@ -26,18 +55,20 @@ class CastilloGameState(pyspiel.State):
     king - region ID of king
     """
 
-    def __init__(self, game, players, rewards, board, grandes, king):
+    def __init__(self, game):
+        super().__init__(self,game)
         self._game = game
         self._cur_player = 0
-        self._num_players = min(_MAX_PLAYERS,players)
+        gameJSON=json.loads(game._parent_game_state)
+        self._num_players = gameJSON["players"]
         self._is_terminal = False
         self._history = []
-        self._initboard = board 
-        self._board = board
+        self._initboard = gameJSON["board"].copy() 
+        self._board = gameJSON["board"].copy()
         self._win_points = np.full(players, 0)
-        self._rewards = rewards
-        self._grandes = grandes
-        self._king = king
+        self._rewards = gameJSON["rewards"]
+        self._grandes = gameJSON["grandes"]
+        self._king = gameJSON["king"]
     
         assert(len(self._board)==self._num_players*(len(self._rewards)+1))
         assert(len(grandes)==self._num_players)
@@ -238,7 +269,7 @@ class CastilloGameState(pyspiel.State):
         return myclone
 
 
-class CastilloGame(object):
+class CastilloGame(pyspiel.Game):
     """El Grande Castillo Game - subgame of El Grande which decides on the optimum positioning of
     pieces moved from the Castillo in the scoring phase of rounds 3/6/9
     Parameters:
@@ -249,11 +280,17 @@ class CastilloGame(object):
     king - region ID of king
     """
 
-    def __init__(self):
-        pass
+    def __init__(self,params={"state":pyspiel.GameParameter('')}):
+        super().__init__(self, _GAME_TYPE, _GAME_INFO, params or dict())
+        #state input as json with keys players,rewards,board,grandes,king
+        if params.get("state",'') =='':
+            #default
+            self._parent_game_state=_DEFAULT_STATE
+        else:    
+            self._parent_game_state=params["state"].string_value() 
 
-    def new_initial_state(self, players=_DEFAULT_PLAYERS,rewards=_DEFAULT_REGION_REWARDS,board=_DEFAULT_BOARD,grandes=_DEFAULT_GRANDES,king=_DEFAULT_KING):
-        return CastilloGameState(self,players,rewards,board,grandes,king)
+    def new_initial_state(self):
+        return CastilloGameState(self)
 
     def num_distinct_actions(self):
         return _NUM_REGIONS
