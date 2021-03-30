@@ -27,16 +27,18 @@ couch = couchdb.Server('http://'+credentials+'@'+couchip)
 #list of advice actions which should be generated for each relevant phase
 #stored as tuple: (type, phase, forPlayer)
 adviceList = [('explain_cards','power',_ADV_ALL),
+                ('score_predictions','power',_ADV_EACH),
                 ('suggestion','power',_ADV_CURRENT),
                 ('opponent_report','start',_ADV_ALL),
-                ('opponent_report','scoring',_ADV_ALL),
                 ('home_report','start',_ADV_EACH),
-                ('home_report','action',_ADV_CURRENT),
+                ('home_report','action',_ADV_EACH),
                 ('caballero_value','action',_ADV_EACH),
                 ('card_action_value','action',_ADV_CURRENT),
-                ('score_predictions','action',_ADV_CURRENT),
+                ('opponent_report','action',_ADV_ALL),
+                ('score_predictions','action',_ADV_EACH),
                 ('suggestion','action',_ADV_CURRENT),
                 ('castillo','scoring',_ADV_EACH),
+                ('opponent_report','scoring',_ADV_ALL),
                 ('alerts','action',_ADV_EACH)]
 
 #regions, as in TTS code
@@ -134,7 +136,7 @@ def makeAdvice(player, atype, gameState, jsonObject, thisHistory):
     elif atype=='opponent_report':
       advice = opponentReportAdvice(player, gameState, thisHistory, jsonObject)
     elif atype=='score_predictions':
-      advice = scorePredictionsAdvice(player, jsonObject)
+      advice = scorePredictionsAdvice(player, gameState, jsonObject)
     elif atype=='suggestion':
       advice = suggestionAdvice(player, gameState, jsonObject)
     elif atype=='alerts':
@@ -325,8 +327,12 @@ def opponentReportAdvice(player, gameState, thisHistory, jsonObject):
     return advice
  
 #predicted scores for each player based on this round
-def scorePredictionsAdvice(player, jsonObject):
+def scorePredictionsAdvice(player, gameState, jsonObject):
     advice = initAdviceStructure(player, 'score_prediction', jsonObject)
+    theseScores = gameState._score_all_regions()
+    currentScores = gameState._current_score()
+    #for each player, return their current point total and how much they'd score if this were a scoring round
+    advice['advice']={gameState._players[p]:(currentScores[p],theseScores[p]) for p in range(gameState._num_players)}
     return advice
  
 #suggestion of what cards to play
@@ -354,17 +360,24 @@ def suggestionAdvice(player, gameState, jsonObject):
 #specific alert of problems that might come up
 def alertAdvice(player, gameState, thisHistory, jsonObject):
     advice = initAdviceStructure(player, 'alerts', jsonObject)
-    #home region lost this turn?
-    player_id = gameState._get_pid(player)
-    home = gameState._grande_region(player_id)
-    turn = gameState._get_round()
-    #check for control of region, right now
-    hasControl = (gameState._rank_region(home).get(player_id,-1) == 1)
-    if not hasControl:
-        #was control just lost?
-        lastControl = thisHistory["ranks"][home,player_id,(turn-1)] == 1
-        if lastControl:
-            advice['advice']['home']='Lost control of home region' 
+    #home regions lost this turn?
+    your_id = gameState._get_pid(player)
+    advice_string=""
+    for player_id in range(gameState._num_players):
+        home = gameState._grande_region(player_id)
+        turn = gameState._get_round()
+        #check for control of region, right now
+        hasControl = (gameState._rank_region(home).get(player_id,-1) == 1)
+        if not hasControl:
+            #was control just lost?
+            lastControl = thisHistory["ranks"][home,player_id,(turn-1)] == 1
+            if lastControl:
+                #report for yourself or for opponent
+                if player_id==your_id:
+                    advice_string += 'You have lost control of your home region.\n"
+                else:
+                    advice_string += gameState._players[player_id] + " has lost control of their home region.\n"
+    advice['advice']['home']=advice_string 
     return advice
 
 #insert information about caballero movements in a way that will be
