@@ -38,9 +38,9 @@ _GAME_INFO = pyspiel.GameInfo(
     num_distinct_actions=_NUM_REGIONS,
     max_chance_outcomes=0,
     num_players=5,
-    min_utility=0.0,
-    max_utility=1.0,
-    utility_sum=1.0,
+    min_utility=-10.0,
+    max_utility=10.0,
+    utility_sum=0.0,
     max_game_length=_MAX_PLAYERS)
 
 
@@ -63,17 +63,18 @@ class CastilloGameState(pyspiel.State):
         self._num_players = gameJSON["players"]
         self._is_terminal = False
         self._history = []
-        self._initboard = gameJSON["board"].copy() 
-        self._board = gameJSON["board"].copy()
-        self._win_points = np.full(players, 0)
+        self._board = gameJSON["board"]
+        self._scores = gameJSON["scores"]
+        self._win_points = np.full(self._num_players,0)
         self._rewards = gameJSON["rewards"]
         self._grandes = gameJSON["grandes"]
         self._king = gameJSON["king"]
-    
-        assert(len(self._board)==self._num_players*(len(self._rewards)+1))
-        assert(len(grandes)==self._num_players)
-        assert(min(grandes)>0 and max(grandes)<=_NUM_REGIONS)
-        assert(king>0 and king<=_NUM_REGIONS)
+ 
+        assert(len(self._board)==self._num_players*(len(self._rewards)))
+        assert(len(self._grandes)==self._num_players)
+        assert(len(self._scores)==self._num_players)
+        assert(min(self._grandes)>0 and max(self._grandes)<=_NUM_REGIONS)
+        assert(self._king>0 and self._king<=_NUM_REGIONS)
 
     # Helper functions (not part of the OpenSpiel API).
 
@@ -154,7 +155,7 @@ class CastilloGameState(pyspiel.State):
         elif self.is_terminal():
             return []
         else:
-            return range(_NUM_REGIONS)
+            return [r for r in range(_NUM_REGIONS)]
 
     def legal_actions_mask(self, player=None):
         """Get a list of legal actions.
@@ -172,7 +173,7 @@ class CastilloGameState(pyspiel.State):
         else:
             return [1]*_NUM_REGIONS
 
-    def apply_action(self, action):
+    def do_apply_action(self, action):
         """Applies the specified action to the state. Action+1 = regionID of region to be moved to"""
 
         castillo_count=ord(self._board[self._cur_player]) - ord(_ZERO_CHAR)
@@ -183,11 +184,17 @@ class CastilloGameState(pyspiel.State):
         self._history.append(action)
     
         if self._all_moved():
-            final_scores = self._score_all_regions()
-            #win points normalised between 0 and 1
-            min_score = min(final_scores)
-            divisor = max(final_scores)-min_score
-            self._win_points = [(f-min_score)/divisor for f in final_scores]
+            final_scores = self._scores + self._score_all_regions()
+            
+            # turn scores into win points
+            fscore=max(final_scores)
+            sscore=0
+            if len(final_scores)>1: #always true except in test games
+                sscore = sorted(final_scores,reverse=True)[1]
+            scorepoint=(fscore+sscore)/2
+            #players are scored relative to the midpoint between first and second place
+            self._win_points = final_scores - scorepoint
+
             self._cur_player = pyspiel.PlayerId.TERMINAL
             self._is_terminal=True
         else:
@@ -256,17 +263,21 @@ class CastilloGameState(pyspiel.State):
         return [self.clone()]
 
     def __str__(self):
-        return self._board
+        n = self._num_players
+        boardret = [self._board[i:i+n] for i in range(0,len(self._board),n)]
+        return " ".join(boardret) + " | " + "".join([str(g) for g in self._grandes]) + " | " + str(self._king)
 
     def clone(self):
         #return copy.deepcopy(self)
-        myclone = CastilloGameState(self._game,self._num_players,self._rewards,self._initboard,self._grandes,self._king)
+        myclone = CastilloGameState(self._game)
         myclone._cur_player = self._cur_player
         myclone._is_terminal = self._is_terminal
         myclone._history = self._history.copy()
         myclone._board = self._board
+        myclone._scores = self._scores.copy()
         myclone._win_points = self._win_points.copy()
         return myclone
+    
 
 
 class CastilloGame(pyspiel.Game):
@@ -283,11 +294,11 @@ class CastilloGame(pyspiel.Game):
     def __init__(self,params={"state":pyspiel.GameParameter('')}):
         super().__init__(self, _GAME_TYPE, _GAME_INFO, params or dict())
         #state input as json with keys players,rewards,board,grandes,king
-        if params.get("state",'') =='':
-            #default
-            self._parent_game_state=_DEFAULT_STATE
-        else:    
-            self._parent_game_state=params["state"].string_value() 
+        if params.get("state",None) is not None:
+            state=params["state"].string_value() 
+            if state=='':
+                state=_DEFAULT_STATE
+            self._parent_game_state=state 
 
     def new_initial_state(self):
         return CastilloGameState(self)
@@ -311,10 +322,10 @@ class CastilloGame(pyspiel.Game):
         return self._num_players
 
     def min_utility(self):
-        return 0.0
+        return -10.0
 
     def max_utility(self):
-        return 1.0
+        return 10.0
 
     def get_type(self):
         return pyspiel.GameType(
@@ -370,4 +381,5 @@ class CastilloGameObserver:
 
     def string_from(self, state, player):
         del player
-        return str(state)
+        return ""
+   #     return str(state)

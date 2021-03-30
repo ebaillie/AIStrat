@@ -258,9 +258,9 @@ class MCTSBot(pyspiel.Bot):
   def restart_at(self, state):
     pass
 
-  def multi_step(self, state):
+  def multi_step(self, state,step_to_end=False):
     """Returns bot's next action at given state.
-       Also includes string of best children until the next player is up and value of multi-step"""
+       Also includes string of best children until a finishing condition and value of multi-step"""
 
     t1 = time.time()
     root = self.mcts_search(state)
@@ -283,17 +283,17 @@ class MCTSBot(pyspiel.Bot):
 
     mcts_action = best.action
 
-    returns = [(best.action,(best.total_reward/best.explore_count))] +self._player_path(best.player,best.best_child())
+    returns = [(best.action,(best.total_reward/best.explore_count))] +self._player_path(best.player,best.best_child(),step_to_end)
 
     return mcts_action, [r[0] for r in returns], [r[1] for r in returns]
 
-  def _player_path(self,for_player,node):
-    if node.player!=for_player:
+  def _player_path(self,for_player,node,step_to_end):
+    if (not step_to_end) and (node.player!=for_player):
       return []
     elif len(node.children)==0:
-      return [(node.action,(node.total_reward/node.explore_count))]
+      return [(node.action,node.total_reward)]
     else:
-      return [(node.action,(node.total_reward/node.explore_count))] + self._player_path(for_player,node.best_child())
+      return [(node.action,(node.total_reward/node.explore_count))] + self._player_path(for_player,node.best_child(),step_to_end)
 
   def step_with_policy(self, state):
     """Returns bot's policy and action at given state."""

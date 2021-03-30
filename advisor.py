@@ -12,6 +12,8 @@ import pyspiel
 import el_grande
 import el_grande_pieces as pieces
 import mcts_ext as mcts                        #local version of openspiel's mcts, with reporting extensions
+import castillo_game
+
 from multiprocessing import Process, Manager
 
 _ROUND_COUNT=10
@@ -124,7 +126,7 @@ def makeAdvice(player, atype, gameState, jsonObject, thisHistory):
     elif atype=='card_action_value':
       advice = cardActionValueAdvice(player, gameState, jsonObject)
     elif atype=='castillo':
-      advice = castilloAdvice(player, jsonObject)
+      advice = castilloAdvice(player, gameState, jsonObject)
     elif atype=='explain_cards':
       advice = explainCardsAdvice(player, jsonObject)
     elif atype=='home_report':
@@ -206,30 +208,58 @@ def cardActionValueAdvice(player, gameState, jsonObject):
     return advice
  
 #consequences of putting castillo caballeros in each region
-def castilloAdvice(player,jsonObject):
+def castilloAdvice(player, gameState, jsonObject):
     advice = initAdviceStructure(player, 'castillo', jsonObject)
-    pieces=copy.deepcopy(jsonObject['pieces'])
-    castilloPieceCount=pieces[player].get('Castillo',0)
+    cpieces=copy.deepcopy(jsonObject['pieces'])
+    castilloPieceCount=cpieces[player].get('Castillo',0)
     if castilloPieceCount==0:
         return advice
     
+    #openSpiel Monte Carlo simulations
+    playerID = gameState._get_pid(player)
+    advice['advice']['simulations']={}
+    sim_count=5
+    choices=np.full((gameState._num_players,gameState._num_players*sim_count),0)
+    for sim_player in range(gameState._num_players):
+        temp_choices = np.full((gameState._num_players,sim_count),0)
+        cg=castillo_game.CastilloGame({"state":pyspiel.GameParameter(gameState.castillo_game_string(sim_player))})
+        cgs=cg.new_initial_state()
+        rng=np.random.RandomState()
+        eval=mcts.RandomRolloutEvaluator(1,rng)
+        mbot = mcts.MCTSBot(cg,2,500,eval,random_state=rng,solve=True,verbose=False)
+        for i in range(sim_count):
+            c,cc,vc=mbot.multi_step(cgs,True) #do sim runs, reporting back whole game history
+            optpad=np.full(gameState._num_players-len(cc),9).tolist() #pad out truncated multi-steps, where not all players have castillo pieces
+            temp_choices[:,i]=cc+optpad
+        #convert back to indexing by core game player numbers
+        idxs=gameState.scoring_order(sim_player)
+        for p in idxs:
+            choices[p,sim_player*sim_count:(sim_player+1)*sim_count]=temp_choices[idxs[p]]
+
+    #now convert from gameState to TTS format
+    for p in range(gameState._num_players):
+        unique, counts = np.unique(choices[p,:], return_counts=True)
+        pcount = dict(zip(unique, counts/sum(counts)))
+        advice['advice']['simulations'][gameState._players[p]]={pieces._REGIONS[p]:round(pcount[p],2) for p in pcount}
+
     #counterfactuals for points available from putting castillo cabs in each region
-    #simple strategy for the moment - only consider your own moves and points
-    #TODO - do this with openSpiel
-    del pieces[player]['Castillo']
+    #simple strategy - only consider your own moves and points
+    
+    advice['advice']['simple']={}
+    del cpieces[player]['Castillo']
     for region in regions:
-        curRanks,curPlayerPieces=rankPlayersInRegion(region,pieces)
-        pieces[player][region]=pieces[player].get(region,0)+castilloPieceCount
-        newRanks,newPlayerPieces=rankPlayersInRegion(region,pieces)
+        curRanks,curPlayerPieces=rankPlayersInRegion(region,cpieces)
+        cpieces[player][region]=cpieces[player].get(region,0)+castilloPieceCount
+        newRanks,newPlayerPieces=rankPlayersInRegion(region,cpieces)
         if curRanks.get(player,4)>3:
-            newScore=rankScore(newRanks[player],jsonObject['points'][region],pieces.get('grande','')==region,jsonObject['king']==region)
-            advice['advice'][region]=newScore            
+            newScore=rankScore(newRanks[player],jsonObject['points'][region],cpieces.get('grande','')==region,jsonObject['king']==region)
+            advice['advice']['simple'][region]=newScore            
         elif curRanks.get(player,4)==newRanks[player]:
-            advice['advice'][region]=0
+            advice['advice']['simple'][region]=0
         else:
-            curScore=rankScore(curRanks[player],jsonObject['points'][region],pieces.get('grande','')==region,jsonObject['king']==region)
-            newScore=rankScore(newRanks[player],jsonObject['points'][region],pieces.get('grande','')==region,jsonObject['king']==region)
-            advice['advice'][region]=newScore-curScore
+            curScore=rankScore(curRanks[player],jsonObject['points'][region],cpieces.get('grande','')==region,jsonObject['king']==region)
+            newScore=rankScore(newRanks[player],jsonObject['points'][region],cpieces.get('grande','')==region,jsonObject['king']==region)
+            advice['advice']['simple'][region]=newScore-curScore
             
     return advice
  

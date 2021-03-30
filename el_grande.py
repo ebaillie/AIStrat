@@ -1146,7 +1146,7 @@ class ElGrandeGameState(pyspiel.State):
         final_scores = self._current_score()
         self._board_state[:,_ST_BDY_SECRET]=0 
         if self._turn_state[_ST_TN_ROUND]==self._end_turn:
-            # first player is +ve, second is 0, subsequent are -ve 
+            # turn scores into win points
             fscore=max(final_scores)
             sscore=0
             if len(final_scores)>1: #always true except in test games
@@ -1193,23 +1193,35 @@ class ElGrandeGameState(pyspiel.State):
                 self._acard_state[i] = _ST_AC_DONE
         self._acard_state[-1] = _ST_AC_DEALT
 
-    def castillo_game_string(self):
+    def scoring_order(self,player=-1):
+        #order in which players will do their (secret) castillo choice - needed for castillo subgame
+        if player<0:
+            player=self._cur_player
+        scoring_order=self._playersleft+self._playersdone
+        zero_point=scoring_order.index(player)
+        new_idxs={v:(scoring_order.index(v)-zero_point)%len(scoring_order) for v in scoring_order}
+        return new_idxs
+
+    def castillo_game_string(self,player=-1):
         #translate game state into CastilloGame format, for running tiny sims
         state_vals={"players":self._num_players,"rewards":self._rewards,"king":self._king_region()+1}
         #put player state into castillo game state in order, starting from current player
         #region 0 is the castillo
         board=np.full(self._num_players*_NUM_EXT_REGIONS,0)
-        grandes=[]
-        idx=0 #player id as in castillo game
-        for p in self._playersleft+self._playersdone:
+        grandes=np.full(self._num_players,0)
+        scores=np.full(self._num_players,0)
+        new_idxs=self.scoring_order(player)
+        for p in new_idxs:
+            idx=new_idxs[p]
             for r in range(_NUM_REGIONS):
                 board[(r+1)*self._num_players+idx] = self._board_state[r,p]    
             #castillo
             board[idx] = self._board_state[pieces._CASTILLO,p]
-            grandes += [self._grande_region(p)+1]
-            idx +=1
+            grandes[idx] = self._grande_region(p)+1
+            scores[idx] = self._current_score()[p]
         state_vals["board"]="".join([chr(ord('A')+b) for b in board])
-        state_vals["grandes"]=grandes
+        state_vals["grandes"]=grandes.tolist()
+        state_vals["scores"]=scores.tolist()
         return json.dumps(state_vals) 
 
     # OpenSpiel (PySpiel) API functions are below. These need to be provided by
