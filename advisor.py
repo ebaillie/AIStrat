@@ -56,11 +56,19 @@ def processDBInput(inputData, gameHistory):
   print('processing')
   assert(type(inputData)==bytes)
   jsonObject=json.loads(inputData.decode('utf-8'))
+  
+  #standard advice each turn
   if jsonObject.get('turninfo')!=None:
     if jsonObject['turninfo']['phase']=='end':
       archiveAdvice(jsonObject, gameHistory)
     else:
       generateAdviceFor(jsonObject, gameHistory)
+
+  #specially requested advice
+  if jsonObject.get('requestdata')!=None:
+    generateRequestedAdvice(jsonObject)
+
+
    
 #send all current advice to an archive table, then delete and re-create game_advice
 #yes this means two concurrent games would have old advice archived before the end of game - not necessarily a problem
@@ -147,8 +155,57 @@ def makeAdvice(player, atype, gameState, jsonObject, thisHistory):
     except:
       adviceDB = couch.create('game_advice')
     
-    if advice['advice']!='':  
+    if len(advice['advice'])>0:  
         adviceDB.save(advice)
+
+#special user-generated request for advice
+def generateRequestedAdvice(requestJSON):
+    #find info for the current round, which should already be in the database
+    dbquery={"selector": {"name": {"$eq": requestJSON["name"]},"time": {"$eq": requestJSON["time"]},
+            "turninfo": {"phase": {"$eq": requestJSON["phase"]},"round": {"$eq": requestJSON["round"]}}}}
+
+    histDB = couch['game_history']
+    hist_docs = histDB.find(dbquery)
+    foundDoc = None 
+    for hist in hist_docs:
+        if requestJSON.get("player","")=="":
+            #not filtered by player - by default this is an acceptable doc
+            foundDoc = hist
+            break
+        elif len(hist["turninfo"]["playersleft"])>0 and hist["turninfo"]["playersleft"][0]==requestJSON["player"]:
+            #filtered by player - make sure they're the next on turn
+            foundDoc = hist
+            break
+    
+    advice = {'game':requestJSON['name'],'time':requestJSON['time'],'player':requestJSON['player'],
+            'round':requestJSON['round'],'phase':requestJSON['phase'],'trigger':'request',
+            'advicetype':requestJSON['advicetype'],'requestdata':requestJSON['requestdata'],'advice':{}}
+    if foundDoc == None:
+        advice['advice'] = ["Problem finding game history data for " + requestJSON['advicetype'] + " advice."]
+    else:
+        thisGame =  el_grande.ElGrandeGame({"game_state_json":pyspiel.GameParameter(json.dumps(foundDoc))})
+        thisState = thisGame.new_initial_state()
+        if requestJSON['advicetype']=='suggestion':
+            #find which of the legal actions matches the requested trial action, and play it.
+            playedAct = False
+            for act in thisState.legal_actions():
+                if thisState.action_to_string(act,withPlayer=False)==requestJSON['requestdata']:
+                    thisState.do_apply_action(act)
+                    playedAct = True
+                    break
+            if playedAct:
+                suggestion = suggestionAdvice(requestJSON['player'],thisState,foundDoc)
+                advice['advice'] = [requestJSON['requestdata']] + suggestion['advice']
+            else:
+                advice['advice'] = ["Unable to simulate suggested play "+requestJSON['requestdata']] 
+
+    try:
+      adviceDB = couch['game_advice']
+    except:
+      adviceDB = couch.create('game_advice')
+    adviceDB.save(advice)
+    
+
 
 def initAdviceStructure(player, advicetype, jsonObject):
     triggerPlayer=""
@@ -219,30 +276,33 @@ def castilloAdvice(player, gameState, jsonObject):
     
     #openSpiel Monte Carlo simulations
     playerID = gameState._get_pid(player)
-    advice['advice']['simulations']={}
-    sim_count=5
-    choices=np.full((gameState._num_players,gameState._num_players*sim_count),0)
-    for sim_player in range(gameState._num_players):
-        temp_choices = np.full((gameState._num_players,sim_count),0)
-        cg=castillo_game.CastilloGame({"state":pyspiel.GameParameter(gameState.castillo_game_string(sim_player))})
-        cgs=cg.new_initial_state()
-        rng=np.random.RandomState()
-        eval=mcts.RandomRolloutEvaluator(1,rng)
-        mbot = mcts.MCTSBot(cg,2,500,eval,random_state=rng,solve=True,verbose=False)
-        for i in range(sim_count):
-            c,cc,vc=mbot.multi_step(cgs,True) #do sim runs, reporting back whole game history
-            optpad=np.full(gameState._num_players-len(cc),9).tolist() #pad out truncated multi-steps, where not all players have castillo pieces
-            temp_choices[:,i]=cc+optpad
-        #convert back to indexing by core game player numbers
-        idxs=gameState.scoring_order(sim_player)
-        for p in idxs:
-            choices[p,sim_player*sim_count:(sim_player+1)*sim_count]=temp_choices[idxs[p]]
+    cabMovers = [p for p in range(gameState._num_players) if gameState._board_state[pieces._CASTILLO,p]>0]
+    if len(cabMovers)>1:
+        #more than one player moving cabs - it's worth simulating
+        advice['advice']['simulations']={}
+        sim_count=5
+        choices=np.full((gameState._num_players,gameState._num_players*sim_count),0)
+        for sim_player in range(gameState._num_players):
+            temp_choices = np.full((gameState._num_players,sim_count),0)
+            cg=castillo_game.CastilloGame({"state":pyspiel.GameParameter(gameState.castillo_game_string(sim_player))})
+            cgs=cg.new_initial_state()
+            rng=np.random.RandomState()
+            eval=mcts.RandomRolloutEvaluator(1,rng)
+            mbot = mcts.MCTSBot(cg,2,500,eval,random_state=rng,solve=True,verbose=False)
+            for i in range(sim_count):
+                c,cc,vc=mbot.multi_step(cgs,True) #do sim runs, reporting back whole game history
+                optpad=np.full(gameState._num_players-len(cc),9).tolist() #pad out truncated multi-steps, where not all players have castillo pieces
+                temp_choices[:,i]=cc+optpad
+            #convert back to indexing by core game player numbers
+            idxs=gameState.scoring_order(sim_player)
+            for p in idxs:
+                choices[p,sim_player*sim_count:(sim_player+1)*sim_count]=temp_choices[idxs[p]]
 
-    #now convert from gameState to TTS format
-    for p in range(gameState._num_players):
-        unique, counts = np.unique(choices[p,:], return_counts=True)
-        pcount = dict(zip(unique, counts/sum(counts)))
-        advice['advice']['simulations'][gameState._players[p]]={pieces._REGIONS[p]:round(pcount[p],2) for p in pcount}
+        #now convert from gameState to TTS format
+        for p in range(gameState._num_players):
+            unique, counts = np.unique(choices[p,:], return_counts=True)
+            pcount = dict(zip(unique, counts/sum(counts)))
+            advice['advice']['simulations'][gameState._players[p]]={pieces._REGIONS[p]:round(pcount[p],2) for p in pcount}
 
     #counterfactuals for points available from putting castillo cabs in each region
     #simple strategy - only consider your own moves and points
@@ -298,6 +358,16 @@ def homeReportAdvice(player, gameState, thisHistory, jsonObject):
             if home in targets:
                 targeters=targeters+[p]
     advice['advice']['targeters']=[gameState._get_player_name(t) for t in targeters]
+    
+    #check if it's in your interest to overtake someone else
+    targeted=[]
+    ptargets = reportTargets(gameState,player_id)
+    for p in range(gameState._num_players):
+        if p!=player_id:
+            opp_home = gameState._grande_region(p)
+            if opp_home in ptargets:
+                targeted = targeted + [p]
+    advice['advice']['targeted']=[gameState._get_player_name(t) for t in targeted]
     return advice
  
 #regions where each player has been scoring historically, whether it's first/second/third, and how many areas the player is scoring.
@@ -328,11 +398,11 @@ def opponentReportAdvice(player, gameState, thisHistory, jsonObject):
  
 #predicted scores for each player based on this round
 def scorePredictionsAdvice(player, gameState, jsonObject):
-    advice = initAdviceStructure(player, 'score_prediction', jsonObject)
+    advice = initAdviceStructure(player, 'score_predictions', jsonObject)
     theseScores = gameState._score_all_regions()
     currentScores = gameState._current_score()
     #for each player, return their current point total and how much they'd score if this were a scoring round
-    advice['advice']={gameState._players[p]:(currentScores[p],theseScores[p]) for p in range(gameState._num_players)}
+    advice['advice']={gameState._players[p]:(int(currentScores[p]),int(theseScores[p])) for p in range(gameState._num_players)}
     return advice
  
 #suggestion of what cards to play
@@ -341,7 +411,10 @@ def suggestionAdvice(player, gameState, jsonObject):
 
     advice = initAdviceStructure(player, 'suggestion', jsonObject)
     turn = gameState._get_round()
-    phase = gameState._get_current_phase_name()
+    advicePhase = gameState._get_current_phase_name()
+    #multistep to end of all actions if we're anywhere in action phase
+    if advicePhase.startswith("action"):
+        advicePhase="action"
     simGame = gameState.clone()
     simGame._end_turn = 3*((turn-1)//3) + 3 #next scoring round from where we are
     rng = np.random.RandomState()
@@ -350,7 +423,7 @@ def suggestionAdvice(player, gameState, jsonObject):
     act, actList, returns = mbot.multi_step(simGame)
     actReport=[] #string actions to return as advice
     for a in actList:
-        if simGame._get_current_phase_name().startswith(phase): #keep suggestions to this phase, no run-ons
+        if simGame._get_current_phase_name().startswith(advicePhase): #keep suggestions to this phase, no run-ons
             actReport = actReport + [simGame.action_to_string(a,withPlayer=False)]
             simGame.do_apply_action(a)
     advice['advice'] = actReport
@@ -374,10 +447,11 @@ def alertAdvice(player, gameState, thisHistory, jsonObject):
             if lastControl:
                 #report for yourself or for opponent
                 if player_id==your_id:
-                    advice_string += 'You have lost control of your home region.\n"
+                    advice_string += "You have lost control of your home region.\n"
                 else:
                     advice_string += gameState._players[player_id] + " has lost control of their home region.\n"
-    advice['advice']['home']=advice_string 
+    if advice_string!="":
+        advice['advice']['home']=advice_string 
     return advice
 
 #insert information about caballero movements in a way that will be
