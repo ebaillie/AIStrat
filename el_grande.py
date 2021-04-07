@@ -727,8 +727,8 @@ class ElGrandeGameState(pyspiel.State):
     
     def _score_all_regions(self):
         final_scores=np.full(self._num_players,0)
-        for r in range(_NUM_REGIONS):
-            final_scores = final_scores+self._score_one_region(r+1)
+        for r in range(_NUM_EXT_REGIONS):
+            final_scores = final_scores+self._score_one_region(r)
         return final_scores
     
     def _pack_court(self):

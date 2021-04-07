@@ -8,14 +8,18 @@ import couchdb
 import json
 import copy
 import numpy as np
+import pickle
+
 import pyspiel
 import el_grande
 import el_grande_pieces as pieces
 import mcts_ext as mcts                        #local version of openspiel's mcts, with reporting extensions
 import castillo_game
 
-from multiprocessing import Process, Manager
+from multiprocessing import Process
+from datetime import datetime
 
+_LOG_FILE = "advisor.log"
 _ROUND_COUNT=10
 _ADV_CURRENT = 0 #produce advice for current player
 _ADV_EACH = 1 #produce separate advice for each player in game
@@ -46,23 +50,24 @@ regions=["Galicia","Pais Vasco","Aragon","Cataluna","Castilla la Vieja","Castill
 extRegions=regions.copy()
 extRegions.append("Castillo")
 
-def makeDictKey(jsonObject):
-    return jsonObject['name']+str(jsonObject['time'])
+def makePickleName(jsonObject):
+    return "pickles/"+jsonObject['name']+str(jsonObject['time'])
 
 #invoked when the Flask listener detects data coming in to the db
 #assume that the data is 'body' text about to be forwarded to db - we inspect this to see what sort of
 #advice needs to be generated. Input data should be a byte string with JSON
-def processDBInput(inputData, gameHistory):
-  print('processing')
+def processDBInput(inputData):
+
+  log('processing')
   assert(type(inputData)==bytes)
   jsonObject=json.loads(inputData.decode('utf-8'))
   
   #standard advice each turn
   if jsonObject.get('turninfo')!=None:
     if jsonObject['turninfo']['phase']=='end':
-      archiveAdvice(jsonObject, gameHistory)
+      archiveAdvice(jsonObject)
     else:
-      generateAdviceFor(jsonObject, gameHistory)
+      generateAdviceFor(jsonObject)
 
   #specially requested advice
   if jsonObject.get('requestdata')!=None:
@@ -72,10 +77,7 @@ def processDBInput(inputData, gameHistory):
    
 #send all current advice to an archive table, then delete and re-create game_advice
 #yes this means two concurrent games would have old advice archived before the end of game - not necessarily a problem
-#also remove gameHistory entry for this game, since it's no longer needed
-def archiveAdvice(jsonObject, gameHistory):
-    dict_key=makeDictKey(jsonObject)
-    del gameHistory[dict_key]
+def archiveAdvice(jsonObject):
 
     try:
       adviceDB = couch['game_advice']
@@ -98,58 +100,70 @@ def archiveAdvice(jsonObject, gameHistory):
     couch.create('game_advice')
  
 #input data for a turn and phase - generate some advice, depending on what turn, phase and player we have here
-def generateAdviceFor(jsonObject, gameHistory):
-  print('advice')
+def generateAdviceFor(jsonObject):
+  log('advice')
   assert(jsonObject.get('turninfo','')!='')
   thisGame = el_grande.ElGrandeGame({"game_state_json":pyspiel.GameParameter(json.dumps(jsonObject))})
   thisGameState = thisGame.new_initial_state()
-  
+  players = thisGameState._num_players
+  regions = pieces._NUM_EXT_REGIONS
+ 
+  gameHistory = {"pieces":np.zeros((regions,players,_ROUND_COUNT)),"ranks":np.zeros((regions,players,_ROUND_COUNT))}
+  pickleName = makePickleName(jsonObject)
+  try:
+    gameHistory = pickle.load( open( pickleName, "rb" ) )
+    log("unpickled game history")
+  except:
+    log("blank game history")
+
   if jsonObject['turninfo']['phase']=='start':
-    addRelevantGameHistory(thisGameState, gameHistory,makeDictKey(jsonObject))
-    print("Game History P0 pieces {0}".format(gameHistory[makeDictKey(jsonObject)]['pieces'][:,0,:]))
+    addRelevantGameHistory(thisGameState, gameHistory)
+    pickle.dump( gameHistory, open( pickleName, "wb" ) )
+    log("Game History P0 pieces {0}".format(gameHistory['pieces'][:,0,:]))
 
   if len(jsonObject['turninfo']['playersleft'])>0:
     player=jsonObject['turninfo']['playersleft'][0]
     phase=jsonObject['turninfo']['phase']
-    thisGameHistory = gameHistory[makeDictKey(jsonObject)]
     for adv in adviceList:
       if adv[1]==phase:
-        print(adv[0])
+        log(adv[0])
         if adv[2]==_ADV_EACH:
             for p in jsonObject['players']:
-                proc = Process(target=makeAdvice,args=(p, adv[0], thisGameState, jsonObject, thisGameHistory))
-                proc.start()
-                proc.join()
+                makeAdvice(p, adv[0], thisGameState, jsonObject, gameHistory)
         else:
             p = player if adv[2]==_ADV_CURRENT else ''
-            proc = Process(target=makeAdvice,args=(p, adv[0], thisGameState, jsonObject, thisGameHistory))
-            proc.start()
-            proc.join()
+            makeAdvice(p, adv[0], thisGameState, jsonObject, gameHistory)
       
 #generate specified advice for specified player/round/phase based on this gameState or jsonObject
 def makeAdvice(player, atype, gameState, jsonObject, thisHistory):
     if player!='' and jsonObject['advisor'][player]['on']=='false':
        return 
 
+    proc = None
+    advice = initAdviceStructure(player, atype, jsonObject)
     if atype=='caballero_value':
-      advice = caballeroAdvice(player, gameState, jsonObject)
+      proc = Process(target=caballeroAdvice,args=(player, gameState, jsonObject, advice))
     elif atype=='card_action_value':
-      advice = cardActionValueAdvice(player, gameState, jsonObject)
+      proc = Process(target=cardActionValueAdvice,args=(player, gameState, jsonObject, advice))
     elif atype=='castillo':
-      advice = castilloAdvice(player, gameState, jsonObject)
+      proc = Process(target=castilloAdvice,args=(player, gameState, jsonObject, advice))
     elif atype=='explain_cards':
-      advice = explainCardsAdvice(player, jsonObject)
+      proc = Process(target=explainCardsAdvice,args=(player, jsonObject, advice))
     elif atype=='home_report':
-      advice = homeReportAdvice(player, gameState, thisHistory, jsonObject)
+      proc = Process(target=homeReportAdvice,args=(player, gameState, thisHistory, jsonObject, advice))
     elif atype=='opponent_report':
-      advice = opponentReportAdvice(player, gameState, thisHistory, jsonObject)
+      proc = Process(target=opponentReportAdvice,args=(player, gameState, thisHistory, jsonObject, advice))
     elif atype=='score_predictions':
-      advice = scorePredictionsAdvice(player, gameState, jsonObject)
+      proc = Process(target=scorePredictionsAdvice,args=(player, gameState, jsonObject, advice))
     elif atype=='suggestion':
-      advice = suggestionAdvice(player, gameState, jsonObject)
+      proc = Process(target=suggestionAdvice,args=(player, gameState, jsonObject, advice))
     elif atype=='alerts':
-      advice = alertAdvice(player, gameState, thisHistory, jsonObject)
-      
+      proc = Process(target=alertAdvice,args=(player, gameState, thisHistory, jsonObject, advice))
+    proc.start()
+    proc.join()
+
+ 
+def saveAdvice(advice): 
     try:
       adviceDB = couch['game_advice']
     except:
@@ -194,16 +208,13 @@ def generateRequestedAdvice(requestJSON):
                     playedAct = True
                     break
             if playedAct:
-                suggestion = suggestionAdvice(requestJSON['player'],thisState,foundDoc)
+                suggestion = initAdviceStructure(requestJSON['player'], 'suggestion', foundDoc)
+                suggestionAdvice(requestJSON['player'],thisState,foundDoc,suggestion,False)
                 advice['advice'] = [requestJSON['requestdata']] + suggestion['advice']
             else:
                 advice['advice'] = ["Unable to simulate suggested play "+requestJSON['requestdata']] 
 
-    try:
-      adviceDB = couch['game_advice']
-    except:
-      adviceDB = couch.create('game_advice')
-    adviceDB.save(advice)
+    saveAdvice(advice)
     
 
 
@@ -216,8 +227,7 @@ def initAdviceStructure(player, advicetype, jsonObject):
                   'phase':jsonObject['turninfo']['phase'],'trigger':triggerPlayer,'advicetype':advicetype,'advice':{}}
 
 #value of each caballero in each region
-def caballeroAdvice(player, gameState, jsonObject):
-    advice = initAdviceStructure(player, 'caballero_value', jsonObject)
+def caballeroAdvice(player, gameState, jsonObject, advice):
     advice['advice']['regions']={}
     for region in extRegions:
         advice['advice']['regions'][region]=assessCaballeroPoints(player,region,jsonObject)
@@ -226,15 +236,13 @@ def caballeroAdvice(player, gameState, jsonObject):
     validTargets = pieces._NEIGHBORS[gameState._king_region()]+[pieces._CASTILLO]
     targets = reportTargets(gameState, gameState._get_pid(player), validList=validTargets)
     advice['advice']['targets']=[pieces._REGIONS[r] for r in targets if r>=0]
-    return advice
+    saveAdvice(advice)
  
 #possible point value of playing specific cards in this round
-def cardActionValueAdvice(player, gameState, jsonObject):
+def cardActionValueAdvice(player, gameState, jsonObject, advice):
     
     mc_sims= 10
     mc_runs= 5
-
-    advice = initAdviceStructure(player, 'card_action_value', jsonObject)
     turn = gameState._get_round()
     phase = gameState._get_current_phase_name()
     simGame = gameState.clone()
@@ -264,15 +272,14 @@ def cardActionValueAdvice(player, gameState, jsonObject):
         actSD=np.std(actVals)
         advice['advice'][actionName]={"lo":round(actMean-2*actSD,1),"hi":round(actMean+2*actSD,1)}
     
-    return advice
+    saveAdvice(advice)
  
 #consequences of putting castillo caballeros in each region
-def castilloAdvice(player, gameState, jsonObject):
-    advice = initAdviceStructure(player, 'castillo', jsonObject)
+def castilloAdvice(player, gameState, jsonObject, advice):
     cpieces=copy.deepcopy(jsonObject['pieces'])
     castilloPieceCount=cpieces[player].get('Castillo',0)
     if castilloPieceCount==0:
-        return advice
+        return 
     
     #openSpiel Monte Carlo simulations
     playerID = gameState._get_pid(player)
@@ -302,7 +309,9 @@ def castilloAdvice(player, gameState, jsonObject):
         for p in range(gameState._num_players):
             unique, counts = np.unique(choices[p,:], return_counts=True)
             pcount = dict(zip(unique, counts/sum(counts)))
-            advice['advice']['simulations'][gameState._players[p]]={pieces._REGIONS[p]:round(pcount[p],2) for p in pcount}
+            #for the moment only send data for self
+            #advice['advice']['simulations'][gameState._players[p]]={pieces._REGIONS[p]:round(pcount[p],2) for p in pcount}
+            advice['advice']['simulations'][gameState._players[playerID]]={pieces._REGIONS[playerID]:round(pcount[playerID],2)}
 
     #counterfactuals for points available from putting castillo cabs in each region
     #simple strategy - only consider your own moves and points
@@ -323,11 +332,10 @@ def castilloAdvice(player, gameState, jsonObject):
             newScore=rankScore(newRanks[player],jsonObject['points'][region],cpieces.get('grande','')==region,jsonObject['king']==region)
             advice['advice']['simple'][region]=newScore-curScore
             
-    return advice
+    saveAdvice(advice)
  
 #human-generated explanations of use of current cards
-def explainCardsAdvice(player,jsonObject):
-    advice = initAdviceStructure(player, 'explain_cards', jsonObject)
+def explainCardsAdvice(player,jsonObject, advice):
     adv_text=""
     for deck in jsonObject['cards']:
         card_id = jsonObject['cards'][deck]
@@ -335,11 +343,10 @@ def explainCardsAdvice(player,jsonObject):
         exp_string = pieces._CARDS[card_id]["explain"]
         adv_text = adv_text+card_title+": "+exp_string+"\n"
     advice['advice']=adv_text
-    return advice
+    saveAdvice(advice)
  
 #whether player's home region is 'under threat' or they have already lost number 1 status there
-def homeReportAdvice(player, gameState, thisHistory, jsonObject):
-    advice = initAdviceStructure(player, 'home_report', jsonObject)
+def homeReportAdvice(player, gameState, thisHistory, jsonObject, advice):
     player_id = gameState._get_pid(player)
     home = gameState._grande_region(player_id)
     turn = gameState._get_round()
@@ -368,11 +375,10 @@ def homeReportAdvice(player, gameState, thisHistory, jsonObject):
             if opp_home in ptargets:
                 targeted = targeted + [p]
     advice['advice']['targeted']=[gameState._get_player_name(t) for t in targeted]
-    return advice
+    saveAdvice(advice)
  
 #regions where each player has been scoring historically, whether it's first/second/third, and how many areas the player is scoring.
-def opponentReportAdvice(player, gameState, thisHistory, jsonObject):
-    advice = initAdviceStructure(player, 'opponent_report', jsonObject)
+def opponentReportAdvice(player, gameState, thisHistory, jsonObject, advice):
     regions = pieces._NUM_EXT_REGIONS
     for r in range(regions):
         advice['advice'][pieces._REGIONS[r]]={'pieces':{},'ranks':{}}
@@ -394,22 +400,20 @@ def opponentReportAdvice(player, gameState, thisHistory, jsonObject):
                 advice['advice'][pieces._REGIONS[r]]['pieces'][pname]=placements.tolist()
             advice['advice'][pieces._REGIONS[r]]['ranks'][pname]=ranks
 
-    return advice
+    saveAdvice(advice)
  
 #predicted scores for each player based on this round
-def scorePredictionsAdvice(player, gameState, jsonObject):
-    advice = initAdviceStructure(player, 'score_predictions', jsonObject)
+def scorePredictionsAdvice(player, gameState, jsonObject, advice):
     theseScores = gameState._score_all_regions()
     currentScores = gameState._current_score()
     #for each player, return their current point total and how much they'd score if this were a scoring round
     advice['advice']={gameState._players[p]:(int(currentScores[p]),int(theseScores[p])) for p in range(gameState._num_players)}
-    return advice
+    saveAdvice(advice)
  
 #suggestion of what cards to play
-def suggestionAdvice(player, gameState, jsonObject):
+def suggestionAdvice(player, gameState, jsonObject, advice, saveMe=True):
     mc_sims = 800
 
-    advice = initAdviceStructure(player, 'suggestion', jsonObject)
     turn = gameState._get_round()
     advicePhase = gameState._get_current_phase_name()
     #multistep to end of all actions if we're anywhere in action phase
@@ -428,11 +432,11 @@ def suggestionAdvice(player, gameState, jsonObject):
             simGame.do_apply_action(a)
     advice['advice'] = actReport
     
-    return advice
+    if saveMe:
+        saveAdvice(advice)
 
 #specific alert of problems that might come up
-def alertAdvice(player, gameState, thisHistory, jsonObject):
-    advice = initAdviceStructure(player, 'alerts', jsonObject)
+def alertAdvice(player, gameState, thisHistory, jsonObject, advice):
     #home regions lost this turn?
     your_id = gameState._get_pid(player)
     advice_string=""
@@ -452,27 +456,23 @@ def alertAdvice(player, gameState, thisHistory, jsonObject):
                     advice_string += gameState._players[player_id] + " has lost control of their home region.\n"
     if advice_string!="":
         advice['advice']['home']=advice_string 
-    return advice
+    saveAdvice(advice)
 
 #insert information about caballero movements in a way that will be
 #easy to interpret for the advisor
-def addRelevantGameHistory(gameState, gameHistory, gameName):
+def addRelevantGameHistory(gameState, gameHistory):
 
     turn = gameState._get_round()
     regions = pieces._NUM_EXT_REGIONS
     players = gameState._num_players
    
-    localHistory = gameHistory.get(gameName,{"pieces":np.zeros((regions,players,_ROUND_COUNT)),"ranks":np.zeros((regions,players,_ROUND_COUNT))}) 
-    localHistory["pieces"][:,:,turn] = gameState._board_state[:regions,:players]
+    gameHistory["pieces"][:,:,turn] = gameState._board_state[:regions,:players]
     for r in range(regions):
         #rank everything last by default
         rd=gameState._rank_region(r)
         ranks=[rd.get(i,players) for i in range(players)]
-        localHistory["ranks"][r,:,turn]=ranks
+        gameHistory["ranks"][r,:,turn]=ranks
 
-    gameHistory[gameName]=localHistory
-    #hoping the info is correctly stored in shared memory 
-    return
 
 #return next n regions to be targeted by this player, using greedy algorithm
 def reportTargets(gameState, player, stopRegion=-1, stopStep=5, validList=None):
@@ -627,3 +627,13 @@ def assessCaballeroPoints(player,region,jsonObject):
     
     retObject={"pieces":playerPieceCount,"value":pieceVal,"excess":excess,"optimals":optimals,"optimalvalues":maxval}
     return retObject 
+
+def log(message):
+    try:
+        now = datetime.now()
+        f = open(_LOG_FILE,"a")
+        f.write(now.strftime("%d/%m/%Y %H:%M:%S")+": "+message+"\n")
+        f.close()
+        print(message)
+    except:
+        print("Couldn't write to log file")
