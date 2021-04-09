@@ -996,7 +996,7 @@ class ElGrandeGameState(pyspiel.State):
             checkregionfrom = ccard['details']['from']['region']
             checkregionto = ccard['details']['to']['region']
             if checkregionfrom =='ownerchoose' or checkregionto == 'ownerchoose':
-                actions = [i + _ACT_CHOOSE_SECRETS for i in range(_NUM_REGIONS) if self._board_state[i,self._cur_player]>=self._movement_tracking.get('fromcondition',0)]
+                actions = [i + _ACT_CHOOSE_SECRETS for i in range(_NUM_REGIONS) if self._board_state[i,self._cur_player]>=self._movement_tracking.get('fromcondition',0) and not self._region_has_king(i)]
                 return sorted(actions)
         for fromreg in self._movement_tracking['from']:
             for toreg in self._movement_tracking['to']:

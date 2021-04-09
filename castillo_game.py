@@ -155,7 +155,7 @@ class CastilloGameState(pyspiel.State):
         elif self.is_terminal():
             return []
         else:
-            return [r for r in range(_NUM_REGIONS) if r!=self._king]
+            return [r for r in range(_NUM_REGIONS) if (r+1)!=self._king]
 
     def legal_actions_mask(self, player=None):
         """Get a list of legal actions.

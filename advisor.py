@@ -306,12 +306,10 @@ def castilloAdvice(player, gameState, jsonObject, advice):
                 choices[p,sim_player*sim_count:(sim_player+1)*sim_count]=temp_choices[idxs[p]]
 
         #now convert from gameState to TTS format
-        for p in range(gameState._num_players):
-            unique, counts = np.unique(choices[p,:], return_counts=True)
-            pcount = dict(zip(unique, counts/sum(counts)))
-            #for the moment only send data for self
-            #advice['advice']['simulations'][gameState._players[p]]={pieces._REGIONS[p]:round(pcount[p],2) for p in pcount}
-            advice['advice']['simulations'][gameState._players[playerID]]={pieces._REGIONS[playerID]:round(pcount[playerID],2)}
+        #for the moment only send data for self
+        unique, counts = np.unique(choices[playerID,:], return_counts=True)
+        pcount = dict(zip(unique.tolist(), (counts/sum(counts)).tolist()))
+        advice['advice']['simulations'][gameState._players[playerID]]={pieces._REGIONS[p]:pcount[p] for p in pcount}
 
     #counterfactuals for points available from putting castillo cabs in each region
     #simple strategy - only consider your own moves and points
