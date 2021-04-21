@@ -18,6 +18,7 @@ import castillo_game
 
 from multiprocessing import Process
 from datetime import datetime
+from collections import Counter
 
 _LOG_FILE = "advisor.log"
 _ROUND_COUNT=10
@@ -58,7 +59,7 @@ def makePickleName(jsonObject):
 #advice needs to be generated. Input data should be a byte string with JSON
 def processDBInput(inputData):
 
-  log('processing')
+  #log('processing')
   assert(type(inputData)==bytes)
   jsonObject=json.loads(inputData.decode('utf-8'))
   
@@ -101,7 +102,7 @@ def archiveAdvice(jsonObject):
  
 #input data for a turn and phase - generate some advice, depending on what turn, phase and player we have here
 def generateAdviceFor(jsonObject):
-  log('advice')
+  log('starting advice')
   assert(jsonObject.get('turninfo','')!='')
   thisGame = el_grande.ElGrandeGame({"game_state_json":pyspiel.GameParameter(json.dumps(jsonObject))})
   thisGameState = thisGame.new_initial_state()
@@ -119,14 +120,13 @@ def generateAdviceFor(jsonObject):
   if jsonObject['turninfo']['phase']=='start':
     addRelevantGameHistory(thisGameState, gameHistory)
     pickle.dump( gameHistory, open( pickleName, "wb" ) )
-    log("Game History P0 pieces {0}".format(gameHistory['pieces'][:,0,:]))
+    #log("Game History P0 pieces {0}".format(gameHistory['pieces'][:,0,:]))
 
   if len(jsonObject['turninfo']['playersleft'])>0:
     player=jsonObject['turninfo']['playersleft'][0]
     phase=jsonObject['turninfo']['phase']
     for adv in adviceList:
       if adv[1]==phase:
-        log(adv[0])
         if adv[2]==_ADV_EACH:
             for p in jsonObject['players']:
                 makeAdvice(p, adv[0], thisGameState, jsonObject, gameHistory)
@@ -228,6 +228,7 @@ def initAdviceStructure(player, advicetype, jsonObject):
 
 #value of each caballero in each region
 def caballeroAdvice(player, gameState, jsonObject, advice):
+    log("caballeroAdvice")
     advice['advice']['regions']={}
     for region in extRegions:
         advice['advice']['regions'][region]=assessCaballeroPoints(player,region,jsonObject)
@@ -240,6 +241,7 @@ def caballeroAdvice(player, gameState, jsonObject, advice):
  
 #possible point value of playing specific cards in this round
 def cardActionValueAdvice(player, gameState, jsonObject, advice):
+    log("cardActionAdvice")
     
     mc_sims= 10
     mc_runs= 5
@@ -273,9 +275,11 @@ def cardActionValueAdvice(player, gameState, jsonObject, advice):
         advice['advice'][actionName]={"lo":round(actMean-2*actSD,1),"hi":round(actMean+2*actSD,1)}
     
     saveAdvice(advice)
+    log("cardActionAdvice finished all simulations")
  
 #consequences of putting castillo caballeros in each region
 def castilloAdvice(player, gameState, jsonObject, advice):
+    log("castilloAdvice")
     cpieces=copy.deepcopy(jsonObject['pieces'])
     castilloPieceCount=cpieces[player].get('Castillo',0)
     if castilloPieceCount==0:
@@ -331,9 +335,11 @@ def castilloAdvice(player, gameState, jsonObject, advice):
             advice['advice']['simple'][region]=newScore-curScore
             
     saveAdvice(advice)
+    log("castilloAdvice finished all simulations")
  
 #human-generated explanations of use of current cards
 def explainCardsAdvice(player,jsonObject, advice):
+    log("explainCardsAdvice")
     adv_text=""
     for deck in jsonObject['cards']:
         card_id = jsonObject['cards'][deck]
@@ -345,6 +351,7 @@ def explainCardsAdvice(player,jsonObject, advice):
  
 #whether player's home region is 'under threat' or they have already lost number 1 status there
 def homeReportAdvice(player, gameState, thisHistory, jsonObject, advice):
+    log("homeReportAdvice")
     player_id = gameState._get_pid(player)
     home = gameState._grande_region(player_id)
     turn = gameState._get_round()
@@ -377,6 +384,7 @@ def homeReportAdvice(player, gameState, thisHistory, jsonObject, advice):
  
 #regions where each player has been scoring historically, whether it's first/second/third, and how many areas the player is scoring.
 def opponentReportAdvice(player, gameState, thisHistory, jsonObject, advice):
+    log("opponentReportAdvice")
     regions = pieces._NUM_EXT_REGIONS
     for r in range(regions):
         advice['advice'][pieces._REGIONS[r]]={'pieces':{},'ranks':{}}
@@ -402,6 +410,7 @@ def opponentReportAdvice(player, gameState, thisHistory, jsonObject, advice):
  
 #predicted scores for each player based on this round
 def scorePredictionsAdvice(player, gameState, jsonObject, advice):
+    log("scorePredictionsAdvice")
     theseScores = gameState._score_all_regions()
     currentScores = gameState._current_score()
     #for each player, return their current point total and how much they'd score if this were a scoring round
@@ -410,31 +419,58 @@ def scorePredictionsAdvice(player, gameState, jsonObject, advice):
  
 #suggestion of what cards to play
 def suggestionAdvice(player, gameState, jsonObject, advice, saveMe=True):
+    log("suggestionAdvice")
     mc_sims = 800
+
+    #number of sim runs to do per number of selectable cards, so likelihoods of thresholds are a fairly constant 0.1
+    mc_power_runs = {1:1,2:10,3:11,4:13,5:22,6:21,7:20,8:22,9:24,10:26,11:21,12:23,13:24}
+    #thresholds of likelihood around 0.1 under H0 (assumption the power card suggestions are just random/no info)
+    #counts over this considered "high"
+    power_sig_thresholds = {1:0,2:8,3:7,4:7,5:9,6:8,7:7,8:7,9:7,10:7,11:6,12:6,13:6}
 
     turn = gameState._get_round()
     advicePhase = gameState._get_current_phase_name()
     #multistep to end of all actions if we're anywhere in action phase
     if advicePhase.startswith("action"):
         advicePhase="action"
-    simGame = gameState.clone()
-    simGame._end_turn = 3*((turn-1)//3) + 3 #next scoring round from where we are
-    rng = np.random.RandomState()
-    eval=mcts.RandomRolloutEvaluator(4,rng)
-    mbot = mcts.MCTSBot(simGame._game,2,mc_sims,eval,random_state=rng,solve=True,verbose=False)
-    act, actList, returns = mbot.multi_step(simGame)
-    actReport=[] #string actions to return as advice
-    for a in actList:
-        if simGame._get_current_phase_name().startswith(advicePhase): #keep suggestions to this phase, no run-ons
-            actReport = actReport + [simGame.action_to_string(a,withPlayer=False)]
-            simGame.do_apply_action(a)
-    advice['advice'] = actReport
+
+    #power phase - give a range of possibilities, to make up for the instability that's exhibited in power card choice
+    if advicePhase == "power":
+        act_list_size=len(gameState.legal_actions())
+        act_list_runs = mc_power_runs[act_list_size]
+        power_results=[]
+        rng = np.random.RandomState()
+        eval=mcts.RandomRolloutEvaluator(4,rng)
+        mbot = mcts.MCTSBot(gameState._game,2,mc_sims//act_list_runs,eval,random_state=rng,solve=True,verbose=False)
+        for i in range(act_list_runs):        
+            simGame = gameState.clone()         
+            simGame._end_turn = 3*((turn-1)//3) + 3 #next scoring round from where we are
+            power_results = power_results + [mbot.step(simGame)]
+        med_card = power_results[act_list_runs//2]
+        ctr = Counter(power_results)
+        conf_str = "high" if ctr[med_card]>=power_sig_thresholds[act_list_size] else "medium" if ctr[med_card]==(power_sig_thresholds[act_list_size]-1) else "low"
+        advice['advice'] = [simGame.action_to_string(med_card,withPlayer=False) + " ("+conf_str+" confidence)"]    
+    else:
+        simGame = gameState.clone()
+        simGame._end_turn = 3*((turn-1)//3) + 3 #next scoring round from where we are
+        rng = np.random.RandomState()
+        eval=mcts.RandomRolloutEvaluator(4,rng)
+        mbot = mcts.MCTSBot(simGame._game,2,mc_sims,eval,random_state=rng,solve=True,verbose=False)
+        act, actList, returns = mbot.multi_step(simGame)
+        actReport=[] #string actions to return as advice
+        for a in actList:
+            if simGame._get_current_phase_name().startswith(advicePhase): #keep suggestions to this phase, no run-ons
+                actReport = actReport + [simGame.action_to_string(a,withPlayer=False)]
+                simGame.do_apply_action(a)
+        advice['advice'] = actReport
     
     if saveMe:
         saveAdvice(advice)
+    log("suggestionAdvice finished all simulations")
 
 #specific alert of problems that might come up
 def alertAdvice(player, gameState, thisHistory, jsonObject, advice):
+    log("alertAdvice")
     #home regions lost this turn?
     your_id = gameState._get_pid(player)
     advice_string=""
@@ -629,9 +665,10 @@ def assessCaballeroPoints(player,region,jsonObject):
 def log(message):
     try:
         now = datetime.now()
-        f = open(_LOG_FILE,"a")
-        f.write(now.strftime("%d/%m/%Y %H:%M:%S")+": "+message+"\n")
+        fname="logs/"+_LOG_FILE+now.strftime("%Y_%m_%d")
+        f = open(fname,"a")
+        f.write(now.strftime("%d/%m/%Y %H:%M:%S")+"("+str(os.getpid())+"): "+message+"\n")
         f.close()
-        print(message)
+        #print(message)
     except:
         print("Couldn't write to log file")
