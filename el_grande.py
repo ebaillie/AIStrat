@@ -186,6 +186,18 @@ class ElGrandeGameState(pyspiel.State):
     def _get_current_phase_name(self):
         return _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]
 
+    def _region_presence(self,player,withCastillo=True):
+        #in how many regions does this player have any pieces?
+        if withCastillo:
+            return _NUM_EXT_REGIONS - len(np.where(self._board_state[:_NUM_EXT_REGIONS,player]==0)[0])
+        else:
+            return _NUM_REGIONS - len(np.where(self._board_state[:_NUM_REGIONS,player]==0)[0])
+
+ 
+    def _board_cabs(self,player):
+        #how many total caballeros does this player have on the board?
+        return int(sum(self._board_state[:_NUM_EXT_REGIONS,player]))
+
     def _update_current_card_status(self,status):
         #work out which is the current action card, and set it to new status
         ccard = [c for c in range(_NUM_ACTION_CARDS) if self._acard_state[c] == _ST_AC_CHOSEN]
@@ -730,7 +742,17 @@ class ElGrandeGameState(pyspiel.State):
         for r in range(_NUM_EXT_REGIONS):
             final_scores = final_scores+self._score_one_region(r)
         return final_scores
-    
+   
+    def _scores_as_margins(self,player_scores):
+        #represent all players' scores in margin format (distance from the midpoint between first and second)
+        fscore=max(player_scores)
+        sscore=0
+        if len(player_scores)>1: #always true except in test games
+            sscore = sorted(player_scores,reverse=True)[1]
+        scorepoint=(fscore+sscore)/2
+        #players are scored relative to the midpoint between first and second place
+        return player_scores - scorepoint
+ 
     def _pack_court(self):
         #move the correct number of caballeros from province to court, at the point where player action commences
         power_id = np.where(self._pcard_state & pow(2,self._cur_player) == pow(2,self._cur_player))[0][0]
@@ -1147,13 +1169,7 @@ class ElGrandeGameState(pyspiel.State):
         self._board_state[:,_ST_BDY_SECRET]=0 
         if self._turn_state[_ST_TN_ROUND]==self._end_turn:
             # turn scores into win points
-            fscore=max(final_scores)
-            sscore=0
-            if len(final_scores)>1: #always true except in test games
-                sscore = sorted(final_scores,reverse=True)[1]
-            scorepoint=(fscore+sscore)/2
-            #players are scored relative to the midpoint between first and second place
-            self._win_points = final_scores - scorepoint
+            self._win_points = self._scores_as_margins(final_scores)
             self._cur_player = pyspiel.PlayerId.TERMINAL
             self._is_terminal=True
         else:

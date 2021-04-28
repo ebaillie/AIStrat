@@ -295,6 +295,18 @@ class MCTSBot(pyspiel.Bot):
     else:
       return [(node.action,(node.total_reward/node.explore_count))] + self._player_path(for_player,node.best_child(),step_to_end)
 
+  def step_with_recommend_gap(self, state):
+    """Returns bot's action at given state, together with value gap between this act and the next best."""
+    t1 = time.time()
+    root = self.mcts_search(state)
+
+    best = root.best_child()
+
+    mcts_action = best.action
+    rewards =[c.total_reward/c.explore_count for c in reversed(sorted(root.children, key=SearchNode.sort_key))]
+
+    return mcts_action,(rewards[0]-rewards[1])
+
   def step_with_policy(self, state):
     """Returns bot's policy and action at given state."""
     t1 = time.time()

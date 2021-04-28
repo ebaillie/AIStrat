@@ -9,6 +9,7 @@ import json
 import copy
 import numpy as np
 import pickle
+import random
 
 import pyspiel
 import el_grande
@@ -31,20 +32,29 @@ credentials = 'admin:elderberry'
 couch = couchdb.Server('http://'+credentials+'@'+couchip)
 #list of advice actions which should be generated for each relevant phase
 #stored as tuple: (type, phase, forPlayer)
-adviceList = [('explain_cards','power',_ADV_ALL),
-                ('score_predictions','power',_ADV_EACH),
-                ('suggestion','power',_ADV_CURRENT),
-                ('opponent_report','start',_ADV_ALL),
+adviceList = [#('explain_cards','power',_ADV_ALL),
+                #('score_predictions','power',_ADV_EACH),
+                ('power_suggestion','power',_ADV_CURRENT),
+                #('opponent_report','start',_ADV_ALL),
                 ('home_report','start',_ADV_EACH),
                 ('home_report','action',_ADV_EACH),
                 ('caballero_value','action',_ADV_EACH),
                 ('card_action_value','action',_ADV_CURRENT),
-                ('opponent_report','action',_ADV_ALL),
-                ('score_predictions','action',_ADV_EACH),
-                ('suggestion','action',_ADV_CURRENT),
+                #('opponent_report','action',_ADV_ALL),
+                #('score_predictions','action',_ADV_EACH),
+                ('action_suggestion','action',_ADV_CURRENT),
+                ('cab_suggestion','action',_ADV_CURRENT),
+                ('board_report','start',_ADV_ALL),
+                ('board_report','power',_ADV_ALL),
+                ('board_report','action',_ADV_ALL),
+                ('score_calculation','start',_ADV_ALL),
+                ('score_calculation','action',_ADV_ALL),
+                ('score_calculation','scoring',_ADV_ALL),
                 ('castillo','scoring',_ADV_EACH),
-                ('opponent_report','scoring',_ADV_ALL),
-                ('alerts','action',_ADV_EACH)]
+                #('opponent_report','scoring',_ADV_ALL),
+                ('alerts','start',_ADV_EACH),
+                ('alerts','action',_ADV_EACH),
+                ('alerts','scoring',_ADV_EACH)]
 
 #regions, as in TTS code
 regions=["Galicia","Pais Vasco","Aragon","Cataluna","Castilla la Vieja","Castilla la Nueva","Valencia","Sevilla","Granada"]
@@ -117,10 +127,10 @@ def generateAdviceFor(jsonObject):
   except:
     log("blank game history")
 
-  if jsonObject['turninfo']['phase']=='start':
-    addRelevantGameHistory(thisGameState, gameHistory)
-    pickle.dump( gameHistory, open( pickleName, "wb" ) )
-    #log("Game History P0 pieces {0}".format(gameHistory['pieces'][:,0,:]))
+  #if jsonObject['turninfo']['phase']=='start':
+  addRelevantGameHistory(thisGameState, gameHistory)
+  pickle.dump( gameHistory, open( pickleName, "wb" ) )
+  #log("Game History P0 pieces {0}".format(gameHistory['pieces'][:,0,:]))
 
   if len(jsonObject['turninfo']['playersleft'])>0:
     player=jsonObject['turninfo']['playersleft'][0]
@@ -155,8 +165,14 @@ def makeAdvice(player, atype, gameState, jsonObject, thisHistory):
       proc = Process(target=opponentReportAdvice,args=(player, gameState, thisHistory, jsonObject, advice))
     elif atype=='score_predictions':
       proc = Process(target=scorePredictionsAdvice,args=(player, gameState, jsonObject, advice))
-    elif atype=='suggestion':
+    elif atype=='power_suggestion' or atype=='action_suggestion':
       proc = Process(target=suggestionAdvice,args=(player, gameState, jsonObject, advice))
+    elif atype=='cab_suggestion':
+      proc = Process(target=caballeroSuggestionAdvice,args=(player, gameState, jsonObject, advice))
+    elif atype=='board_report':
+      proc = Process(target=boardAdvice,args=(player, gameState, advice))
+    elif atype=='score_calculation':
+      proc = Process(target=scoreCalculationAdvice,args=(player, gameState, jsonObject, advice))
     elif atype=='alerts':
       proc = Process(target=alertAdvice,args=(player, gameState, thisHistory, jsonObject, advice))
     proc.start()
@@ -233,6 +249,13 @@ def caballeroAdvice(player, gameState, jsonObject, advice):
     for region in extRegions:
         advice['advice']['regions'][region]=assessCaballeroPoints(player,region,jsonObject)
 
+
+def caballeroSuggestionAdvice(player, gameState, jsonObject, advice):
+    log("caballeroSuggestionAdvice")
+    advice['advice']['regions']={}
+    for region in extRegions:
+        advice['advice']['regions'][region]=assessCaballeroPoints(player,region,jsonObject)
+
     #best places to put your cabs next:
     validTargets = pieces._NEIGHBORS[gameState._king_region()]+[pieces._CASTILLO]
     targets = reportTargets(gameState, gameState._get_pid(player), validList=validTargets)
@@ -243,14 +266,15 @@ def caballeroAdvice(player, gameState, jsonObject, advice):
 def cardActionValueAdvice(player, gameState, jsonObject, advice):
     log("cardActionAdvice")
     
-    mc_sims= 10
-    mc_runs= 5
+    mc_sims= 40
+    mc_runs= 2
     turn = gameState._get_round()
     phase = gameState._get_current_phase_name()
+    playerID = gameState._get_pid(player)
     simGame = gameState.clone()
     simGame._end_turn = 3*((turn-1)//3) + 3 #next scoring round from where we are
     rng = np.random.RandomState()
-    eval=mcts.RandomRolloutEvaluator(4,rng)
+    eval=mcts.RandomRolloutEvaluator(2,rng)
  
     #if we're before action phase for this player, skip, simulating getting first choice if possible
     while not (simGame._get_current_phase_name()=='action' and simGame.current_player()==simGame._get_pid(player)):
@@ -261,25 +285,63 @@ def cardActionValueAdvice(player, gameState, jsonObject, advice):
 
     #get allowed actions
     legalActions = simGame.legal_actions()
+
+    #find out point margins, board presence etc right now
+    currRegion=simGame._region_presence(playerID)
+    currInsta=int(simGame._scores_as_margins(simGame._current_score())[playerID])
+    currPotential=int(simGame._scores_as_margins(simGame._current_score()+simGame._score_all_regions())[playerID])
+    currCab=int(simGame._board_cabs(playerID))
+
     for action in legalActions:
         actionName = simGame.action_to_string(action,withPlayer=False)
+        print("\n"+actionName)
         actVals=[]
-        mbot = mcts.MCTSBot(simGame._game,2,mc_sims,eval,random_state=rng,solve=True,verbose=False)
+        hiRegion=0
+        hiInsta=-100
+        hiPotential=-100
+        hiCab=-100
+
         for run in range(mc_runs):
             testGame = simGame.clone()
             testGame.do_apply_action(action)
+            mbot = mcts.MCTSBot(testGame._game,2,mc_sims,eval,random_state=rng,solve=True,verbose=False)
             act, actList, returns = mbot.multi_step(testGame)
+            print(actList)
+            #assumed value from mc sim
             actVals = actVals+[returns[-1]]
+            for simact in actList:
+                testGame.do_apply_action(simact)
+            #HACK - if multi-step didn't fill out the plays, put in some random moves
+            while testGame._cur_player==playerID:
+                testGame.do_apply_action(random.choice(testGame.legal_actions()))
+            #after simulating this 'best run', save potential improvements
+            #region presence
+            hiRegion = max(hiRegion,testGame._region_presence(playerID))
+            #actual score margin
+            hiInsta = max(hiInsta,testGame._scores_as_margins(testGame._current_score())[playerID])
+            hiPotential = max(hiPotential,testGame._scores_as_margins(testGame._current_score()+testGame._score_all_regions())[playerID])
+            hiCab = max(hiCab,testGame._board_cabs(playerID))
+
         actMean=np.mean(actVals)
         actSD=np.std(actVals)
         advice['advice'][actionName]={"lo":round(actMean-2*actSD,1),"hi":round(actMean+2*actSD,1)}
-    
+        advice['advice'][actionName]['regionCurrent']=currRegion
+        advice['advice'][actionName]['regionNew']=hiRegion
+        advice['advice'][actionName]['winPointsCurrent']=currInsta
+        advice['advice'][actionName]['winPointsNew']=int(hiInsta)
+        advice['advice'][actionName]['potentialPointsCurrent']=currPotential    
+        advice['advice'][actionName]['potentialPointsNew']=int(hiPotential)
+        advice['advice'][actionName]['boardCabsCurrent']=currCab    
+        advice['advice'][actionName]['boardCabsNew']=int(hiCab)
+            
     saveAdvice(advice)
     log("cardActionAdvice finished all simulations")
  
 #consequences of putting castillo caballeros in each region
 def castilloAdvice(player, gameState, jsonObject, advice):
     log("castilloAdvice")
+    if gameState._get_current_phase_name()!='scoring':
+        return
     cpieces=copy.deepcopy(jsonObject['pieces'])
     castilloPieceCount=cpieces[player].get('Castillo',0)
     if castilloPieceCount==0:
@@ -416,17 +478,40 @@ def scorePredictionsAdvice(player, gameState, jsonObject, advice):
     #for each player, return their current point total and how much they'd score if this were a scoring round
     advice['advice']={gameState._players[p]:(int(currentScores[p]),int(theseScores[p])) for p in range(gameState._num_players)}
     saveAdvice(advice)
+
+#granular score report for all players based on historic data
+def scoreCalculationAdvice(player, gameState, jsonObject, advice):
+    log("scoreCalculationAdvice")
+    if jsonObject.get('scorehistory',[])==[]:
+        return
+
+    for p in range(gameState._num_players):
+        pchr=gameState._players[p]
+        scores={}
+        for r in range(pieces._NUM_EXT_REGIONS):
+            oldScores=jsonObject['scorehistory'][pchr].get(pieces._REGIONS[r],[])
+            newScore=gameState._score_one_region(r)
+            if len(oldScores)>0 or newScore>0:
+                scores[pieces._REGIONS[r]]={"old":sum(sc for sc in oldScores if sc!=None),"new":int(newScore[p])}
+        advice['advice'][pchr]=scores
+ 
+    saveAdvice(advice)
+
+def boardAdvice(player, gameState, advice):
+    log("boardAdvice")
+    advice['advice']={gameState._players[p]:{"cabs":gameState._board_cabs(p),"regions":gameState._region_presence(p),"castillo":str(gameState._region_cabcount(p,pieces._CASTILLO)==True)} for p in range(gameState._num_players)}
+    saveAdvice(advice)
+    
  
 #suggestion of what cards to play
 def suggestionAdvice(player, gameState, jsonObject, advice, saveMe=True):
     log("suggestionAdvice")
-    mc_sims = 800
 
     #number of sim runs to do per number of selectable cards, so likelihoods of thresholds are a fairly constant 0.1
-    mc_power_runs = {1:1,2:10,3:11,4:13,5:22,6:21,7:20,8:22,9:24,10:26,11:21,12:23,13:24}
+    #mc_power_runs = {1:1,2:6,3:6,4:6,5:5,6:5,7:3,8:3,9:3,10:3,11:3,12:3,13:3}
     #thresholds of likelihood around 0.1 under H0 (assumption the power card suggestions are just random/no info)
     #counts over this considered "high"
-    power_sig_thresholds = {1:0,2:8,3:7,4:7,5:9,6:8,7:7,8:7,9:7,10:7,11:6,12:6,13:6}
+    #power_sig_thresholds = {1:0,2:6,3:5,4:5,5:4,6:4,7:3,8:3,9:3,10:3,11:3,12:3,13:3}
 
     turn = gameState._get_round()
     advicePhase = gameState._get_current_phase_name()
@@ -436,25 +521,21 @@ def suggestionAdvice(player, gameState, jsonObject, advice, saveMe=True):
 
     #power phase - give a range of possibilities, to make up for the instability that's exhibited in power card choice
     if advicePhase == "power":
-        act_list_size=len(gameState.legal_actions())
-        act_list_runs = mc_power_runs[act_list_size]
-        power_results=[]
+        mc_sims=800
         rng = np.random.RandomState()
-        eval=mcts.RandomRolloutEvaluator(4,rng)
-        mbot = mcts.MCTSBot(gameState._game,2,mc_sims//act_list_runs,eval,random_state=rng,solve=True,verbose=False)
-        for i in range(act_list_runs):        
-            simGame = gameState.clone()         
-            simGame._end_turn = 3*((turn-1)//3) + 3 #next scoring round from where we are
-            power_results = power_results + [mbot.step(simGame)]
-        med_card = power_results[act_list_runs//2]
-        ctr = Counter(power_results)
-        conf_str = "high" if ctr[med_card]>=power_sig_thresholds[act_list_size] else "medium" if ctr[med_card]==(power_sig_thresholds[act_list_size]-1) else "low"
-        advice['advice'] = [simGame.action_to_string(med_card,withPlayer=False) + " ("+conf_str+" confidence)"]    
+        eval=mcts.RandomRolloutEvaluator(2,rng)
+        mbot = mcts.MCTSBot(gameState._game,2,mc_sims,eval,random_state=rng,solve=True,verbose=False)
+        gameState._end_turn = 3*((turn-1)//3) + 3 #next scoring round from where we are
+        power_results,recommend_gap = mbot.step_with_recommend_gap(gameState)
+        print(recommend_gap)
+        conf_str = 'mild' if recommend_gap<1 else 'moderate' if recommend_gap<5 else 'strong'
+        advice['advice'] = [gameState.action_to_string(power_results,withPlayer=False) + " ("+conf_str+" recommendation)"]    
     else:
+        mc_sims = 800
         simGame = gameState.clone()
         simGame._end_turn = 3*((turn-1)//3) + 3 #next scoring round from where we are
         rng = np.random.RandomState()
-        eval=mcts.RandomRolloutEvaluator(4,rng)
+        eval=mcts.RandomRolloutEvaluator(2,rng)
         mbot = mcts.MCTSBot(simGame._game,2,mc_sims,eval,random_state=rng,solve=True,verbose=False)
         act, actList, returns = mbot.multi_step(simGame)
         actReport=[] #string actions to return as advice
@@ -471,41 +552,84 @@ def suggestionAdvice(player, gameState, jsonObject, advice, saveMe=True):
 #specific alert of problems that might come up
 def alertAdvice(player, gameState, thisHistory, jsonObject, advice):
     log("alertAdvice")
-    #home regions lost this turn?
+    #home regions lost this turn/phase?
     your_id = gameState._get_pid(player)
     advice_string=""
-    for player_id in range(gameState._num_players):
-        home = gameState._grande_region(player_id)
-        turn = gameState._get_round()
-        #check for control of region, right now
-        hasControl = (gameState._rank_region(home).get(player_id,-1) == 1)
-        if not hasControl:
-            #was control just lost?
-            lastControl = thisHistory["ranks"][home,player_id,(turn-1)] == 1
-            if lastControl:
-                #report for yourself or for opponent
-                if player_id==your_id:
-                    advice_string += "You have lost control of your home region.\n"
-                else:
-                    advice_string += gameState._players[player_id] + " has lost control of their home region.\n"
+    for p in range(gameState._num_players):
+        #check the history for loss/gain of control
+        loss_str=""
+        if thisHistory['control'][p]==False and thisHistory['last']['control'][p]==True:
+            loss_str=="lost"
+        elif thisHistory['control'][p]==True and thisHistory['last']['control'][p]==False:
+            loss_str=="regained"
+        if loss_str!="":
+            if p==your_id:
+                advice_string += "You have "+loss_str+" control of your home region.\n"
+            else:
+                advice_string += gameState._players[p] + " has "+loss_str+" control of their home region.\n"
+
+        #check for region threats, if one of the participants is you
+        if p==your_id:
+            for p2 in range(gameState._num_players):
+                if p2 in thisHistory['targets'][p] and not p2 in thisHistory['last']['targets'][p]:
+                    advice_string += gameState._players[p2] + " home region has become a good target.\n"
+        else:
+            if your_id in thisHistory['targets'][p] and not your_id in thisHistory['last']['targets'][p]:
+                    advice_string += "Your home region has become a good target for "+gameState._players[p]+".\n"
+
+        #check for falling behind
+        if p==your_id:
+            thisTrail=thisHistory['trailing'].get(p,0)
+            if thisTrail!=thisHistory['last']['trailing'].get(p,0) and thisTrail>=20:
+                advice_string += "You are behind in placing Caballeros by "+str(thisTrail)+"%.\n" 
+
     if advice_string!="":
-        advice['advice']['home']=advice_string 
+        advice['advice']=advice_string 
     saveAdvice(advice)
 
 #insert information about caballero movements in a way that will be
-#easy to interpret for the advisor
+#easy to interpret for the advisor.
+#also add alertable statuses from last turn, to note changes
 def addRelevantGameHistory(gameState, gameHistory):
 
     turn = gameState._get_round()
+    phase = gameState._get_current_phase_name()
     regions = pieces._NUM_EXT_REGIONS
     players = gameState._num_players
    
-    gameHistory["pieces"][:,:,turn] = gameState._board_state[:regions,:players]
-    for r in range(regions):
-        #rank everything last by default
-        rd=gameState._rank_region(r)
-        ranks=[rd.get(i,players) for i in range(players)]
-        gameHistory["ranks"][r,:,turn]=ranks
+    if phase=='start':
+        gameHistory["pieces"][:,:,turn] = gameState._board_state[:regions,:players]
+        for r in range(regions):
+            #rank everything last by default
+            rd=gameState._rank_region(r)
+            ranks=[rd.get(i,players) for i in range(players)]
+            gameHistory["ranks"][r,:,turn]=ranks
+
+    #keep just one round of old state for alertable states
+    gameHistory['last']={}
+    gameHistory['last']['control']=gameHistory.get('control',{})
+    gameHistory['last']['targets']=gameHistory.get('targets',{})
+    gameHistory['last']['trailing']=gameHistory.get('trailing',{})
+
+    gameHistory['control']={p:(gameState._rank_region(gameState._grande_region(p)).get(p,-1) == 1) for p in range(players)}
+    #check if it's in a player's to overtake someone else
+    gameHistory['targets']={}
+    for p1 in range(players):
+        targeted=[]
+        ptargets = reportTargets(gameState,p1)
+        for p2 in range(players):
+            if p1!=p2:
+                opp_home = gameState._grande_region(p2)
+                if opp_home in ptargets:
+                    targeted = targeted + [p2]
+        gameHistory['targets'][p1]=targeted
+    boarded=[gameState._board_cabs(p) for p in range(players)]
+    lastpl=list.index(boarded,min(boarded))
+    slast=boarded[lastpl]
+    if len(boarded)>1: #always true except in test games
+        slast = sorted(boarded)[1]
+    pct=round((slast-boarded[lastpl])/slast,2)*100
+    gameHistory['trailing']={lastpl:int(pct)}
 
 
 #return next n regions to be targeted by this player, using greedy algorithm
