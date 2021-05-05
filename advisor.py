@@ -127,10 +127,11 @@ def generateAdviceFor(jsonObject):
   except:
     log("blank game history")
 
-  #if jsonObject['turninfo']['phase']=='start':
-  addRelevantGameHistory(thisGameState, gameHistory)
+  if jsonObject['turninfo']['playersleft']!=[]:
+    log("adding game history")
+    addRelevantGameHistory(thisGameState, gameHistory)
+
   pickle.dump( gameHistory, open( pickleName, "wb" ) )
-  #log("Game History P0 pieces {0}".format(gameHistory['pieces'][:,0,:]))
 
   if len(jsonObject['turninfo']['playersleft'])>0:
     player=jsonObject['turninfo']['playersleft'][0]
@@ -215,7 +216,7 @@ def generateRequestedAdvice(requestJSON):
     else:
         thisGame =  el_grande.ElGrandeGame({"game_state_json":pyspiel.GameParameter(json.dumps(foundDoc))})
         thisState = thisGame.new_initial_state()
-        if requestJSON['advicetype']=='suggestion':
+        if requestJSON['advicetype']=='action_suggestion':
             #find which of the legal actions matches the requested trial action, and play it.
             playedAct = False
             for act in thisState.legal_actions():
@@ -248,6 +249,7 @@ def caballeroAdvice(player, gameState, jsonObject, advice):
     advice['advice']['regions']={}
     for region in extRegions:
         advice['advice']['regions'][region]=assessCaballeroPoints(player,region,jsonObject)
+    saveAdvice(advice)
 
 
 def caballeroSuggestionAdvice(player, gameState, jsonObject, advice):
@@ -294,7 +296,7 @@ def cardActionValueAdvice(player, gameState, jsonObject, advice):
 
     for action in legalActions:
         actionName = simGame.action_to_string(action,withPlayer=False)
-        print("\n"+actionName)
+        #print("\n"+actionName)
         actVals=[]
         hiRegion=0
         hiInsta=-100
@@ -306,7 +308,7 @@ def cardActionValueAdvice(player, gameState, jsonObject, advice):
             testGame.do_apply_action(action)
             mbot = mcts.MCTSBot(testGame._game,2,mc_sims,eval,random_state=rng,solve=True,verbose=False)
             act, actList, returns = mbot.multi_step(testGame)
-            print(actList)
+            #print(actList)
             #assumed value from mc sim
             actVals = actVals+[returns[-1]]
             for simact in actList:
@@ -361,7 +363,7 @@ def castilloAdvice(player, gameState, jsonObject, advice):
             cgs=cg.new_initial_state()
             rng=np.random.RandomState()
             eval=mcts.RandomRolloutEvaluator(1,rng)
-            mbot = mcts.MCTSBot(cg,2,500,eval,random_state=rng,solve=True,verbose=False)
+            mbot = mcts.MCTSBot(cg,2,1000,eval,random_state=rng,solve=True,verbose=False)
             for i in range(sim_count):
                 c,cc,vc=mbot.multi_step(cgs,True) #do sim runs, reporting back whole game history
                 optpad=np.full(gameState._num_players-len(cc),9).tolist() #pad out truncated multi-steps, where not all players have castillo pieces
@@ -491,7 +493,7 @@ def scoreCalculationAdvice(player, gameState, jsonObject, advice):
         for r in range(pieces._NUM_EXT_REGIONS):
             oldScores=jsonObject['scorehistory'][pchr].get(pieces._REGIONS[r],[])
             newScore=gameState._score_one_region(r)
-            if len(oldScores)>0 or newScore>0:
+            if len(oldScores)>0 or newScore[p]>0:
                 scores[pieces._REGIONS[r]]={"old":sum(sc for sc in oldScores if sc!=None),"new":int(newScore[p])}
         advice['advice'][pchr]=scores
  
@@ -527,11 +529,11 @@ def suggestionAdvice(player, gameState, jsonObject, advice, saveMe=True):
         mbot = mcts.MCTSBot(gameState._game,2,mc_sims,eval,random_state=rng,solve=True,verbose=False)
         gameState._end_turn = 3*((turn-1)//3) + 3 #next scoring round from where we are
         power_results,recommend_gap = mbot.step_with_recommend_gap(gameState)
-        print(recommend_gap)
+        #print(recommend_gap)
         conf_str = 'mild' if recommend_gap<1 else 'moderate' if recommend_gap<5 else 'strong'
         advice['advice'] = [gameState.action_to_string(power_results,withPlayer=False) + " ("+conf_str+" recommendation)"]    
     else:
-        mc_sims = 800
+        mc_sims = 1000
         simGame = gameState.clone()
         simGame._end_turn = 3*((turn-1)//3) + 3 #next scoring round from where we are
         rng = np.random.RandomState()
@@ -558,10 +560,13 @@ def alertAdvice(player, gameState, thisHistory, jsonObject, advice):
     for p in range(gameState._num_players):
         #check the history for loss/gain of control
         loss_str=""
+        print("history - current and last")
+        print(thisHistory['control'][p])
+        print(thisHistory['last']['control'][p])
         if thisHistory['control'][p]==False and thisHistory['last']['control'][p]==True:
-            loss_str=="lost"
+            loss_str="lost"
         elif thisHistory['control'][p]==True and thisHistory['last']['control'][p]==False:
-            loss_str=="regained"
+            loss_str="regained"
         if loss_str!="":
             if p==your_id:
                 advice_string += "You have "+loss_str+" control of your home region.\n"

@@ -459,9 +459,11 @@ class ElGrandeGameState(pyspiel.State):
             self._acard_state = np.array([1 if self._acard_round[i]==self._turn_state[_ST_TN_ROUND] else self._acard_state[i] for i in range(_NUM_ACTION_CARDS)])
             self._acard_state[-1]=1
             self._playersleft=[self._get_pid(p) for p in data['playersleft']]
+            self._playersdone=[self._get_pid(p) for p in data['playersdone']]
             self._cur_player = self._playersleft[0]
         else:
             self._playersleft=[self._get_pid(p) for p in data['playersleft']]
+            self._playersdone=[self._get_pid(p) for p in data['playersdone']]
             self._cur_player = self._playersleft[0] if len(self._playersleft)>0 else 0
             
 
@@ -1213,9 +1215,9 @@ class ElGrandeGameState(pyspiel.State):
         #order in which players will do their (secret) castillo choice - needed for castillo subgame
         if player<0:
             player=self._cur_player
-        scoring_order=self._playersleft+self._playersdone
-        zero_point=scoring_order.index(player)
-        new_idxs={v:(scoring_order.index(v)-zero_point)%len(scoring_order) for v in scoring_order}
+        so=self._playersleft+self._playersdone
+        zero_point=so.index(player)
+        new_idxs={v:(so.index(v)-zero_point)%len(so) for v in so}
         return new_idxs
 
     def castillo_game_string(self,player=-1):
@@ -1417,11 +1419,11 @@ class ElGrandeGameState(pyspiel.State):
         elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + _NUM_POWER_CARDS:
             actionString = "Retrieve Power "+str(action + 1 - _ACT_RETRIEVE_POWERS)
         elif action == _ACT_DECIDE_CAB:
-            actionString = "Decide Caballeros First"
+            actionString = "Caballero placement before card action"
         elif action == _ACT_DECIDE_ACT:
-            actionString = "Decide Action First"
+            actionString = "Card action before caballero placement"
         elif action == _ACT_DECIDE_ACT_ALT:
-            actionString = "Decide Alternate Action First"
+            actionString = "Card action (2nd choice) before caballero placement"
         elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + _NUM_REGIONS:
             actionString = "Choose "+ pieces._REGIONS[action - _ACT_CHOOSE_SECRETS]
         elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + _NUM_REGIONS:
