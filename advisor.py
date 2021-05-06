@@ -541,8 +541,17 @@ def suggestionAdvice(player, gameState, jsonObject, advice, saveMe=True):
         mbot = mcts.MCTSBot(simGame._game,2,mc_sims,eval,random_state=rng,solve=True,verbose=False)
         act, actList, returns = mbot.multi_step(simGame)
         actReport=[] #string actions to return as advice
+        phase2flag=False #first time we fall into a "phase 2" state, add this info to the returned strings
         for a in actList:
-            if simGame._get_current_phase_name().startswith(advicePhase): #keep suggestions to this phase, no run-ons
+            phase = simGame._get_current_phase_name()
+            if phase.startswith(advicePhase): #keep suggestions to this phase, no run-ons
+                if not phase2flag:
+                    if phase=="actioncard2":
+                        phase2flag=True
+                        actReport = actReport + ["Action card can be played"]
+                    elif phase=="actioncab2":
+                        phase2flag=True
+                        actReport = actReport + ["Caballeros can now be placed"]
                 actReport = actReport + [simGame.action_to_string(a,withPlayer=False)]
                 simGame.do_apply_action(a)
         advice['advice'] = actReport
