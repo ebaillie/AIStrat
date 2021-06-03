@@ -33,27 +33,22 @@ couch = couchdb.Server('http://'+credentials+'@'+couchip)
 #list of advice actions which should be generated for each relevant phase
 #stored as tuple: (type, phase, forPlayer)
 adviceList = [#('explain_cards','power',_ADV_ALL),
-                #('score_predictions','power',_ADV_EACH),
+                ('score_calculation','start',_ADV_ALL),
+                ('alerts','start',_ADV_EACH),
                 ('power_suggestion','power',_ADV_CURRENT),
-                #('opponent_report','start',_ADV_ALL),
-                ('home_report','start',_ADV_EACH),
                 ('home_report','action',_ADV_EACH),
                 ('caballero_value','action',_ADV_EACH),
                 ('card_action_value','action',_ADV_CURRENT),
-                #('opponent_report','action',_ADV_ALL),
-                #('score_predictions','action',_ADV_EACH),
-                ('action_suggestion','action',_ADV_CURRENT),
-                ('cab_suggestion','action',_ADV_CURRENT),
-                ('board_report','start',_ADV_ALL),
-                ('board_report','power',_ADV_ALL),
                 ('board_report','action',_ADV_ALL),
-                ('score_calculation','start',_ADV_ALL),
                 ('score_calculation','action',_ADV_ALL),
-                ('score_calculation','scoring',_ADV_ALL),
-                ('castillo','scoring',_ADV_EACH),
-                #('opponent_report','scoring',_ADV_ALL),
-                ('alerts','start',_ADV_EACH),
                 ('alerts','action',_ADV_EACH),
+                ('cab_suggestion','action',_ADV_CURRENT),
+                ('action_suggestion','action',_ADV_CURRENT),
+                ('board_report','scoring',_ADV_ALL),
+                ('home_report','scoring',_ADV_EACH),
+                ('score_calculation','scoring',_ADV_ALL),
+                ('caballero_value','scoring',_ADV_EACH),
+                ('castillo','scoring',_ADV_EACH),
                 ('alerts','scoring',_ADV_EACH)]
 
 #regions, as in TTS code
@@ -132,6 +127,7 @@ def generateAdviceFor(jsonObject):
     addRelevantGameHistory(thisGameState, gameHistory)
 
   pickle.dump( gameHistory, open( pickleName, "wb" ) )
+  procs=[]
 
   if len(jsonObject['turninfo']['playersleft'])>0:
     player=jsonObject['turninfo']['playersleft'][0]
@@ -140,11 +136,14 @@ def generateAdviceFor(jsonObject):
       if adv[1]==phase:
         if adv[2]==_ADV_EACH:
             for p in jsonObject['players']:
-                makeAdvice(p, adv[0], thisGameState, jsonObject, gameHistory)
+                procs.append(makeAdvice(p, adv[0], thisGameState, jsonObject, gameHistory))
         else:
             p = player if adv[2]==_ADV_CURRENT else ''
-            makeAdvice(p, adv[0], thisGameState, jsonObject, gameHistory)
-      
+            procs.append(makeAdvice(p, adv[0], thisGameState, jsonObject, gameHistory))
+  for p in procs:
+    p.join()
+
+ 
 #generate specified advice for specified player/round/phase based on this gameState or jsonObject
 def makeAdvice(player, atype, gameState, jsonObject, thisHistory):
     if player!='' and jsonObject['advisor'][player]['on']=='false':
@@ -177,8 +176,8 @@ def makeAdvice(player, atype, gameState, jsonObject, thisHistory):
     elif atype=='alerts':
       proc = Process(target=alertAdvice,args=(player, gameState, thisHistory, jsonObject, advice))
     proc.start()
-    proc.join()
-
+    #proc.join()
+    return proc
  
 def saveAdvice(advice): 
     try:
@@ -186,15 +185,20 @@ def saveAdvice(advice):
     except:
       adviceDB = couch.create('game_advice')
     
-    if len(advice['advice'])>0:  
-        adviceDB.save(advice)
+    if len(advice['advice'])>0:
+        try:  
+            adviceDB.save(advice)
+        except:
+            log("Error saving advice "+json.dumps(advice))
 
 #special user-generated request for advice
 def generateRequestedAdvice(requestJSON):
+    #setNice(-5)
     #find info for the current round, which should already be in the database
-    dbquery={"selector": {"name": {"$eq": requestJSON["name"]},"time": {"$eq": requestJSON["time"]},
+    dbquery={"selector": {"name": {"$eq": requestJSON["game"]},"time": {"$eq": requestJSON["time"]},
             "turninfo": {"phase": {"$eq": requestJSON["phase"]},"round": {"$eq": requestJSON["round"]}}}}
 
+    log('request started')
     histDB = couch['game_history']
     hist_docs = histDB.find(dbquery)
     foundDoc = None 
@@ -208,7 +212,7 @@ def generateRequestedAdvice(requestJSON):
             foundDoc = hist
             break
     
-    advice = {'game':requestJSON['name'],'time':requestJSON['time'],'player':requestJSON['player'],
+    advice = {'game':requestJSON['game'],'time':requestJSON['time'],'player':requestJSON['player'],
             'round':requestJSON['round'],'phase':requestJSON['phase'],'trigger':'request',
             'advicetype':requestJSON['advicetype'],'requestdata':requestJSON['requestdata'],'advice':{}}
     if foundDoc == None:
@@ -245,14 +249,17 @@ def initAdviceStructure(player, advicetype, jsonObject):
 
 #value of each caballero in each region
 def caballeroAdvice(player, gameState, jsonObject, advice):
+    #setNice(0)
     log("caballeroAdvice")
     advice['advice']['regions']={}
     for region in extRegions:
         advice['advice']['regions'][region]=assessCaballeroPoints(player,region,jsonObject)
+        advice['advice']['notes']="Remaining in court/province: {0}/{1}".format(jsonObject['pieces'][player]['court'],jsonObject['pieces'][player]['province'])
     saveAdvice(advice)
 
 
 def caballeroSuggestionAdvice(player, gameState, jsonObject, advice):
+    #setNice(0)
     log("caballeroSuggestionAdvice")
     advice['advice']['regions']={}
     for region in extRegions:
@@ -266,6 +273,7 @@ def caballeroSuggestionAdvice(player, gameState, jsonObject, advice):
  
 #possible point value of playing specific cards in this round
 def cardActionValueAdvice(player, gameState, jsonObject, advice):
+    #setNice(10)
     log("cardActionAdvice")
     
     mc_sims= 40
@@ -341,14 +349,17 @@ def cardActionValueAdvice(player, gameState, jsonObject, advice):
  
 #consequences of putting castillo caballeros in each region
 def castilloAdvice(player, gameState, jsonObject, advice):
-    log("castilloAdvice")
+    #setNice(0)
     if gameState._get_current_phase_name()!='scoring':
         return
     cpieces=copy.deepcopy(jsonObject['pieces'])
     castilloPieceCount=cpieces[player].get('Castillo',0)
     if castilloPieceCount==0:
         return 
-    
+    if gameState._get_round()%3!=0:
+        return
+    log("castilloAdvice")
+ 
     #openSpiel Monte Carlo simulations
     playerID = gameState._get_pid(player)
     cabMovers = [p for p in range(gameState._num_players) if gameState._board_state[pieces._CASTILLO,p]>0]
@@ -415,6 +426,7 @@ def explainCardsAdvice(player,jsonObject, advice):
  
 #whether player's home region is 'under threat' or they have already lost number 1 status there
 def homeReportAdvice(player, gameState, thisHistory, jsonObject, advice):
+    #setNice(0)
     log("homeReportAdvice")
     player_id = gameState._get_pid(player)
     home = gameState._grande_region(player_id)
@@ -474,6 +486,7 @@ def opponentReportAdvice(player, gameState, thisHistory, jsonObject, advice):
  
 #predicted scores for each player based on this round
 def scorePredictionsAdvice(player, gameState, jsonObject, advice):
+    #setNice(0)
     log("scorePredictionsAdvice")
     theseScores = gameState._score_all_regions()
     currentScores = gameState._current_score()
@@ -483,6 +496,7 @@ def scorePredictionsAdvice(player, gameState, jsonObject, advice):
 
 #granular score report for all players based on historic data
 def scoreCalculationAdvice(player, gameState, jsonObject, advice):
+    #setNice(-1)
     log("scoreCalculationAdvice")
     if jsonObject.get('scorehistory',[])==[]:
         return
@@ -500,6 +514,7 @@ def scoreCalculationAdvice(player, gameState, jsonObject, advice):
     saveAdvice(advice)
 
 def boardAdvice(player, gameState, advice):
+    #setNice(-1)
     log("boardAdvice")
     advice['advice']={gameState._players[p]:{"cabs":gameState._board_cabs(p),"regions":gameState._region_presence(p),"castillo":str(gameState._region_cabcount(p,pieces._CASTILLO)==True)} for p in range(gameState._num_players)}
     saveAdvice(advice)
@@ -507,6 +522,7 @@ def boardAdvice(player, gameState, advice):
  
 #suggestion of what cards to play
 def suggestionAdvice(player, gameState, jsonObject, advice, saveMe=True):
+    #setNice(2)
     log("suggestionAdvice")
 
     #number of sim runs to do per number of selectable cards, so likelihoods of thresholds are a fairly constant 0.1
@@ -562,6 +578,7 @@ def suggestionAdvice(player, gameState, jsonObject, advice, saveMe=True):
 
 #specific alert of problems that might come up
 def alertAdvice(player, gameState, thisHistory, jsonObject, advice):
+    #setNice(-5)
     log("alertAdvice")
     #home regions lost this turn/phase?
     your_id = gameState._get_pid(player)
@@ -571,10 +588,10 @@ def alertAdvice(player, gameState, thisHistory, jsonObject, advice):
         loss_str=""
         print("history - current and last")
         print(thisHistory['control'][p])
-        print(thisHistory['last']['control'][p])
-        if thisHistory['control'][p]==False and thisHistory['last']['control'][p]==True:
+        print(thisHistory['last']['control'].get(p,'None'))
+        if thisHistory['control'][p]==False and thisHistory['last']['control'].get(p,'None')==True:
             loss_str="lost"
-        elif thisHistory['control'][p]==True and thisHistory['last']['control'][p]==False:
+        elif thisHistory['control'][p]==True and thisHistory['last']['control'].get(p,'None')==False:
             loss_str="regained"
         if loss_str!="":
             if p==your_id:
@@ -805,8 +822,13 @@ def log(message):
         now = datetime.now()
         fname="logs/"+_LOG_FILE+now.strftime("%Y_%m_%d")
         f = open(fname,"a")
-        f.write(now.strftime("%d/%m/%Y %H:%M:%S")+"("+str(os.getpid())+"): "+message+"\n")
+        thistime=now.strftime("%d/%m/%Y %H:%M:%S")
+        f.write("{0}({1},{2}): {3}\n".format(thistime,os.getpid(),os.nice(0),message))
         f.close()
         #print(message)
     except:
         print("Couldn't write to log file")
+
+def setNice(val):
+    niceness=os.nice(0)
+    os.nice(val-niceness)
