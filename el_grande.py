@@ -134,7 +134,7 @@ class ElGrandeGameState(pyspiel.State):
     """
 
     def __init__(self, game):
-        super().__init__(self,game)
+        super().__init__(game)
         self._game = game
         self._cur_player = 0
         self._num_players = game._num_players
@@ -1549,25 +1549,29 @@ class ElGrandeGameState(pyspiel.State):
         my_copy._winner=self._winner
         return my_copy
 
+_games=[]
+
 class ElGrandeGame(pyspiel.Game):
     """El Grande Game
     """
 
-    def __init__(self,params={"players":pyspiel.GameParameter(_DEFAULT_PLAYERS),"game_state":pyspiel.GameParameter(''),"game_state_json":pyspiel.GameParameter('')}):
+    def __init__(self,params={"players":_DEFAULT_PLAYERS,"game_state":'',"game_state_json":''}):
         couchip = '127.0.0.1:5984'
         credentials = 'admin:elderberry'
         couch = couchdb.Server('http://'+credentials+'@'+couchip)
-        super().__init__(self, _GAME_TYPE, _GAME_INFO, params or dict())
+        super().__init__(_GAME_TYPE, _GAME_INFO, params)
+        _games.append(self)
+
         self._num_players=4
         if params.get("players",None) is not None:
-            self._num_players=params["players"].int_value()
+            self._num_players=params["players"]
         game_state=''
         game_state_json=''
         
         if params.get("game_state",None) is not None:
-            game_state=params["game_state"].string_value()
+            game_state=params["game_state"]
         if params.get("game_state_json",None) is not None:
-            game_state_json=params["game_state_json"].string_value()
+            game_state_json=params["game_state_json"]
 
         #there is no need for _state and _state_json to both be given as parameters - if they are, use _state_json
         if game_state == '' and game_state_json == '':

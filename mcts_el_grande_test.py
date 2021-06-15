@@ -13,7 +13,7 @@ from absl import app
 from absl import flags
 import numpy as np
 import el_grande
-import simple_grande
+#import simple_grande
 import couchdb
 
 from open_spiel.python.algorithms import mcts
@@ -149,9 +149,9 @@ def _play_game(game, bots, initial_actions):
     #state._load_game_info(gamedb[gamedocid])
     #state._load_game_state(gamehistdb[gamehistid])
     state._end_turn = FLAGS.end_turn
-  elif FLAGS.game =="simple_grande":
-    state._load_game_info(gamedb[gamedocid])
-    state._load_game_state(gamehistdb[gamehistid])
+#  elif FLAGS.game =="simple_grande":
+#    state._load_game_info(gamedb[gamedocid])
+#    state._load_game_state(gamehistdb[gamehistid])
   _opt_print("Initial state:\n{}".format(state))
 
   history = []
@@ -217,9 +217,9 @@ def _play_game(game, bots, initial_actions):
 
 def main(argv):
   if FLAGS.game=="el_grande":
-    game = el_grande.ElGrandeGame(params={"players":pyspiel.GameParameter(4)})
-  elif FLAGS.game=="simple_grande":
-    game = simple_grande.SimpleGrandeGame()
+    game = el_grande.ElGrandeGame(params={"players":4})
+#  elif FLAGS.game=="simple_grande":
+#    game = simple_grande.SimpleGrandeGame()
   else:
     game = pyspiel.load_game(FLAGS.game)
   bots = [
