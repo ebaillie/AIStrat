@@ -4,7 +4,7 @@ Most of this information remains unchanged for each game.
 '_POINTS' and '_SCOREBOARDS' objects should be copied to game state rather than accessed directly, since they get some small modifications
 whenever a movable scoreboard is moved to a region, to reflect the updated region score.
 
-GUIDs, where present, are those allocated to the objects in the Tabletop Simulator version of the game. 
+GUIDs, where present, are those allocated to the objects in the Tabletop Simulator version of the game.
 In the context of the Python version, they are simply arbitrary labels, but should remain unchanged for compatibility purposes
 
 """

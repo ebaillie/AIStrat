@@ -6,62 +6,46 @@ import numpy as np
 import random
 import couchdb
 import pyspiel
-import el_grande_pieces as pieces
 
+_DEFAULT_CONFIG = "el_grande_default.json" #source of config json if nothing specified on load - file in same directory as .py file
 _MAX_PLAYERS = 5
-_NUM_REGIONS = pieces._NUM_REGIONS
-_NUM_EXT_REGIONS = _NUM_REGIONS + 1
-_NUM_CAB_AREAS = _NUM_EXT_REGIONS + 2 #areas caballeros can be placed, including court and province
-_NUM_FULL_DECKS = pieces._NUM_FULL_DECKS
-_NUM_PLAYABLE_DECKS = _NUM_FULL_DECKS + 1
-_MAX_DECK_COUNT = pieces._MAX_DECK_COUNT
-_NUM_ACTION_CARDS = pieces._NUM_ACTION_CARDS
-_NUM_POWER_CARDS = pieces._NUM_POWER_CARDS
-_POWER_CABS = pieces._POWER_CABS
-_DECK_ENDS = pieces._DECK_ENDS
+_DEFAULT_PLAYERS = 2
+_MAX_REGIONS = 12 # slightly arbitrary - disallow games with "too many" regions
+_MAX_CAB_AREAS = _MAX_REGIONS + 3 # cab areas include province, court and castillo
+_MAX_ACTION_CARDS = 45 #number of action cards in original El Grande, including vetos
+_MAX_POWER_CARDS = 13 #as in original El Grande
+_MAX_SCOREBOARDS = 2 #as in original El Grande game
 
-
-#game phases start,power,action,actionchoose,actioncard1,actioncab1,actioncard2,actioncab2,scoring,end
-#of these, start,power,action and score can be loaded in from TTS game
-_NUM_PHASES = 7
-_PHASE_NAMES = ['start','power','action','actionchoose','actioncard1','actioncab1','actioncard2','actioncab2','response','scoring','end']
+#game phases start,power,action,actionchoose,actioncard1,actioncab1,actioncard2,actioncab2,response,scoring,end
+#of these, start,power,action and score can be loaded in from database
+_NUM_PHASES = 8 #for calculating possible max game size
 _ACTION_TYPES = ['none','move','score','power','grande','scoreboard','king','uniquescore']
 _MAX_TURNS = 9 #full game has 9 turns, but we can specify fewer if need be
 _SCORING_ROUND = [False,False,False,True,False,False,True,False,False,True]
-_NUM_SCOREBOARDS = 2
-
-_DEFAULT_PLAYERS = 2
 
 
-#State matrix indicators
-#Board state - indicators for caballero count,grande and king placement, and secret region vote
-
-_ST_BDX_REGIONS = 0 #start of regions
-_ST_BDX_CASTILLO = pieces._CASTILLO
-_ST_BDX_COURT = pieces._COURT
-_ST_BDX_PROVINCE = pieces._PROVINCE
-_ST_BDX_END = _ST_BDX_PROVINCE + 1
-
+#Global Board State vars
+_ST_MASK_KING = _MAX_PLAYERS #in the king/grande mask, king is at end
 _ST_BDY_CABS = 0 #start of cab counts in region columns (per-player)
 _ST_BDY_GRANDE_KING = _ST_BDY_CABS + _MAX_PLAYERS # grande/king state (1 bit per player, 1 for the king)
 _ST_BDY_SECRET = _ST_BDY_GRANDE_KING + 1 #secret region vote (1 bit per player)
 _ST_BDY_END = _ST_BDY_SECRET + _MAX_PLAYERS
-
-_ST_MASK_KING = _MAX_PLAYERS #in the king/grande mask, king is at end
 
 #Action card state - int indicators per-card 
 _ST_AC_UNPLAYED = 0
 _ST_AC_DEALT = 1 
 _ST_AC_CHOSEN = 2
 _ST_AC_DONE = 3 
+_ACT_CARD_STATES = ['unplayed','dealt','chosen','done']
+_ACT_CARD_IDS = {'unplayed':_ST_AC_UNPLAYED,'dealt':_ST_AC_DEALT,'chosen':_ST_AC_CHOSEN,'done':_ST_AC_DONE}
 
 #Action card type - 0=instant, 1=1-step, 2=multi-step
+#Note 'Angry King' is classed as instant because all the decision steps involved are opponent steps
 _ST_STEPS_0 = 0
 _ST_STEPS_1 = 1
 _ST_STEPS_MULTI = 2
 
 #phases in order(-ish - 'response' can interrupt either actioncard phase)
-#_PHASE_NAMES = ['start','power','action','actionchoose','actioncard1','actioncab1','actioncard2','actioncab2','response','scoring','end']
 _ST_PHASE_START=0
 _ST_PHASE_POWER=1
 _ST_PHASE_ACTION=2
@@ -73,6 +57,11 @@ _ST_PHASE_CAB2=7
 _ST_PHASE_RESPONSE=8
 _ST_PHASE_SCORE=9
 _ST_PHASE_END=10
+_PHASE_NAMES = ['start','power','action','actionchoose','actioncard1','actioncab1','actioncard2',
+                'actioncab2','response','scoring','end']
+_PHASE_IDS = {'start':_ST_PHASE_START,'power':_ST_PHASE_POWER,'action':_ST_PHASE_ACTION,'actionchoose':_ST_PHASE_CHOOSE,
+                'actioncard1':_ST_PHASE_CARD1,'actioncab1':_ST_PHASE_CAB1,'actioncard2':_ST_PHASE_CARD2,
+                'actioncab2':_ST_PHASE_CAB2,'response':_ST_PHASE_RESPONSE,'scoring':_ST_PHASE_SCORE,'end':_ST_PHASE_END}
 
 #Power cards are 13 bitwise indicators (1 bit per player) for power and powerpast
 
@@ -89,17 +78,17 @@ _ST_IDCH = 32 #highest number in the matrix should be 2^5
 #list of action numbers from 0 up
 
 _ACT_CARDS = 0 #start of 'select a card' actions
-_ACT_POWERS = _ACT_CARDS + _NUM_ACTION_CARDS #select power cards
-_ACT_RETRIEVE_POWERS = _ACT_POWERS + _NUM_POWER_CARDS #get back an old power card
-_ACT_DECIDE_CAB = _ACT_RETRIEVE_POWERS + _NUM_POWER_CARDS #decide to place cabs first
+_ACT_POWERS = _ACT_CARDS + _MAX_ACTION_CARDS #select power cards
+_ACT_RETRIEVE_POWERS = _ACT_POWERS + _MAX_POWER_CARDS #get back an old power card
+_ACT_DECIDE_CAB = _ACT_RETRIEVE_POWERS + _MAX_POWER_CARDS #decide to place cabs first
 _ACT_DECIDE_ACT = _ACT_DECIDE_CAB + 1 #decide to play the action card first
 _ACT_DECIDE_ACT_ALT = _ACT_DECIDE_ACT + 1 #special for the 'OR' card - decide on the second action
 _ACT_CHOOSE_SECRETS = _ACT_DECIDE_ACT_ALT + 1 #choose one secret region
-_ACT_MOVE_GRANDES = _ACT_CHOOSE_SECRETS + _NUM_CAB_AREAS
-_ACT_MOVE_KINGS = _ACT_MOVE_GRANDES + _NUM_REGIONS
-_ACT_MOVE_SCOREBOARDS = _ACT_MOVE_KINGS + _NUM_REGIONS
-_ACT_CAB_MOVES = _ACT_MOVE_SCOREBOARDS + (_NUM_SCOREBOARDS*_NUM_REGIONS)
-_ACT_SKIP = _ACT_CAB_MOVES + (_NUM_CAB_AREAS * _NUM_CAB_AREAS * _MAX_PLAYERS) #combos of moving a cab from region, to region, of player
+_ACT_MOVE_GRANDES = _ACT_CHOOSE_SECRETS + _MAX_CAB_AREAS
+_ACT_MOVE_KINGS = _ACT_MOVE_GRANDES + _MAX_REGIONS
+_ACT_MOVE_SCOREBOARDS = _ACT_MOVE_KINGS + _MAX_REGIONS
+_ACT_CAB_MOVES = _ACT_MOVE_SCOREBOARDS + (_MAX_SCOREBOARDS*_MAX_REGIONS)
+_ACT_SKIP = _ACT_CAB_MOVES + (_MAX_CAB_AREAS * _MAX_CAB_AREAS * _MAX_PLAYERS) #combos of moving a cab from region, to region, of player
 _ACT_TRIGGER = _ACT_SKIP + 1 #explicitly trigger an instant card action
 _ACT_END = _ACT_TRIGGER + 1 
 
@@ -123,7 +112,7 @@ _GAME_TYPE = pyspiel.GameType(
     provides_factored_observation_string=False)
 _GAME_INFO = pyspiel.GameInfo(
     num_distinct_actions=_ACT_END,  
-    max_chance_outcomes=np.product(_DECK_ENDS),  #Deck counts 11,9,11,11,1 
+    max_chance_outcomes=11*11*11*11,  #If Deck counts are 11,11,11,11,1 
     num_players=5,
     min_utility=0.0,
     max_utility=1.0,
@@ -162,7 +151,7 @@ class ElGrandeGameState(pyspiel.State):
     #info about card names and abilities, region names, player colours
     
     def _get_rid(self,regionName):
-        return pieces._REGIONS.index(regionName)
+        return self._game._region_ids[regionName]
     
     def _get_pid(self,playerName):
         return self._players.index(playerName)
@@ -172,18 +161,44 @@ class ElGrandeGameState(pyspiel.State):
         return self._players[pid]
 
     def _get_cid(self,cardName):
-        return pieces._CARDS[cardName]['idx']
+        return self._game._cardtrack.index(cardName)
 
     def _get_phaseid(self,phaseName):
         return _PHASE_NAMES.index(phaseName)
 
-    def _get_current_card(self):
-        ccard = [c for c in range(_NUM_ACTION_CARDS) if self._acard_state[c] == _ST_AC_CHOSEN]
+    def _get_power_card(self,player=-1):
+        if player==-1:
+            player = self._cur_player
+        cardlist = np.where(self._pcard_state & pow(2,player) == pow(2,player))[0]
+        assert(len(cardlist)<=1)
+        return cardlist
+
+    def _get_past_power_cards(self,player=-1):
+        if player==-1:
+            player = self._cur_player
+        return np.where(self._past_pcard_state & pow(2,player) == pow(2,player))[0]
+    
+    def _get_current_card_id(self):
+        ccard = [c for c in range(self._game._num_action_cards) if self._acard_state[c] == _ST_AC_CHOSEN]
         assert(len(ccard)<=1) #can have at most one card chosen at a time
         if len(ccard)==0:
+            return -1
+        else:
+            return ccard[0]
+
+    def _get_current_card_name(self):
+        cid=self._get_current_card_id()
+        if cid<1:
+            return ''
+        else:
+            return self._game._cardtrack[cid]
+
+    def _get_current_card(self):
+        cname = self._get_current_card_name()
+        if cname=='':
             return None
         else:
-            return pieces._CARDS[pieces._CARDTRACK[ccard[0]]]
+            return self._game._cards[cname]
 
     def _get_round(self):
         return self._turn_state[_ST_TN_ROUND]
@@ -192,26 +207,53 @@ class ElGrandeGameState(pyspiel.State):
         return _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]]
 
     def _region_has_king(self,region_id):
-        return self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_GRANDE_KING] & (pow(2,_ST_MASK_KING)) == (pow(2,_ST_MASK_KING))
+        return self._board_state[(region_id),_ST_BDY_GRANDE_KING] & (pow(2,_ST_MASK_KING)) == (pow(2,_ST_MASK_KING))
     
     def _king_region(self):
         return int(np.where(self._board_state[:,_ST_BDY_GRANDE_KING]& (pow(2,_ST_MASK_KING))>0)[0][0])
     
+    def _region_has_grande(self,region_id,player_id):
+        return self._board_state[(region_id),_ST_BDY_GRANDE_KING] & (pow(2,player_id)) == (pow(2,player_id))
+
+    def _grande_region(self,player_id):
+        return int(np.where(self._board_state[:,_ST_BDY_GRANDE_KING]& (pow(2,player_id))>0)[0][0])
+    
+    def _region_cabcount(self,region_id,player_id):
+        return self._board_state[(region_id),_ST_BDY_CABS + player_id]
+    
+    def _region_is_secret_choice(self,region_id,player_id=-1):
+        if player_id<0:
+            player_id=self._cur_player
+        return (self._board_state[region_id,_ST_BDY_SECRET] & pow(2,player_id) > 0)
+
+    def _has_secret_region(self,player_id=-1):
+        if player_id<0:
+            player_id=self._cur_player
+        if len(np.where(self._board_state[:,_ST_BDY_SECRET]& pow(2,player_id) > 0)[0])>0:
+            return True
+        else:
+            return False
+
+    def _secret_region(self,player_id=-1):
+        if player_id<0:
+            player_id=self._cur_player
+        return np.where(self._board_state[:,_ST_BDY_SECRET]& pow(2,player_id) > 0)[0][0]
+    
     def _region_presence(self,player,withCastillo=True):
         #in how many regions does this player have any pieces?
         if withCastillo:
-            return _NUM_EXT_REGIONS - len(np.where(self._board_state[:_NUM_EXT_REGIONS,player]==0)[0])
+            return self._game._num_ext_regions - len(np.where(self._board_state[:self._game._num_ext_regions,player]==0)[0])
         else:
-            return _NUM_REGIONS - len(np.where(self._board_state[:_NUM_REGIONS,player]==0)[0])
+            return self._game._num_regions - len(np.where(self._board_state[:self._game._num_regions,player]==0)[0])
 
  
     def _board_cabs(self,player):
         #how many total caballeros does this player have on the board?
-        return int(sum(self._board_state[:_NUM_EXT_REGIONS,player]))
+        return int(sum(self._board_state[:self._game._num_ext_regions,player]))
 
     def _update_current_card_status(self,status):
         #work out which is the current action card, and set it to new status
-        ccard = [c for c in range(_NUM_ACTION_CARDS) if self._acard_state[c] == _ST_AC_CHOSEN]
+        ccard = [c for c in range(self._game._num_action_cards) if self._acard_state[c] == _ST_AC_CHOSEN]
         assert(len(ccard)==1) #raise error if there isn't a card to update
         self._acard_state[ccard[0]] = status
        
@@ -242,23 +284,25 @@ class ElGrandeGameState(pyspiel.State):
         #default is a multi-move, since this is the most common
         return _ST_STEPS_MULTI 
 
+
+
     def _blank_board(self,deal=False):
-        self._board_state = np.full((_ST_BDX_END,_ST_BDY_END),0)
-        self._acard_state = np.full(_NUM_ACTION_CARDS,0)
-        self._acard_round = np.full(_NUM_ACTION_CARDS,0)
+        self._board_state = np.full((self._game._num_cab_areas,_ST_BDY_END),0)
+        self._acard_state = np.full(self._game._num_action_cards,0)
+        self._acard_round = np.full(self._game._num_action_cards,0)
         if deal:
             self._shuffle_acards() #for deterministic 'deal-at-start' card placement
-        self._pcard_state = np.full(_NUM_POWER_CARDS,0)
-        self._past_pcard_state = np.full(_NUM_POWER_CARDS,0)
+        self._pcard_state = np.full(self._game._num_power_cards,0)
+        self._past_pcard_state = np.full(self._game._num_power_cards,0)
         self._turn_state = np.full(_ST_TN_END,0)
-        self._rewards = pieces._POINTS.copy() 
-        self._scoreboards = pieces._SCOREBOARDS.copy()
+        self._points = self._game._points.copy() 
+        self._scoreboards = self._game._scoreboards.copy()
         self._init_move_info()
 
     def _shuffle_acards(self):
-        for i in range(_NUM_FULL_DECKS):
+        for i in range(self._game._num_decks):
             deckname='Deck'+str(i+1)
-            order = pieces._DECKTRACK[deckname].copy()
+            order = self._game._decks[deckname].copy()
             random.shuffle(order)
             for j in range(len(order)):
                 cid = self._get_cid(order[j])
@@ -273,12 +317,12 @@ class ElGrandeGameState(pyspiel.State):
         self._blank_board(True)
         self._state_add_players(jsonData["Players"])
         #random allocate players to region, put king,cabs and grandes down
-        regions = [i for i in range(_NUM_REGIONS)]
+        regions = [i for i in range(self._game._num_regions)]
         for i in range(self._num_players):
             region = random.choice(regions)
             self._board_state[region,i]=2
-            self._board_state[pieces._COURT,i]=7
-            self._board_state[pieces._PROVINCE,i]=21
+            self._board_state[self._game._court_idx,i]=7
+            self._board_state[self._game._province_idx,i]=21
             self._board_state[region,_ST_BDY_GRANDE_KING] |= (pow(2,i))
             regions = [i for i in regions if i!=region]
         king_region = random.choice(regions)
@@ -293,10 +337,25 @@ class ElGrandeGameState(pyspiel.State):
         self._state_add_players(jsonData['players'])
         self._state_add_king(jsonData['king'])
         self._state_add_cabs_grandes(jsonData['pieces'])
-        self._state_add_deck_info(jsonData['cards'],jsonData['pastcards'],jsonData['deckpositions'],jsonData['turninfo'])
-        self._state_add_turn_info(jsonData['turninfo'])
+        
+        #backwards compatibility - importing from TTS version of game unless there's a cardinfo field 
+        if jsonData.get('cardinfo',[])==[]:
+            self._state_add_tts_deck_info(jsonData['cards'],jsonData['pastcards'],jsonData['deckpositions'],jsonData['turninfo'])
+            self._state_add_tts_turn_info(jsonData['turninfo'])
+        else:
+            #native python version - compatible with current export
+            self._state_add_card_info(jsonData['cardinfo'])
+            self._state_add_turn_info(jsonData['turninfo'])
 
-       
+    def _json_for_game_state(self):
+        jsonData={}
+        jsonData['players']=self._json_for_players()
+        jsonData['king']=self._json_for_king()
+        jsonData['pieces']=self._json_for_pieces()
+        jsonData['cardinfo']=self._json_for_card_info()
+        jsonData['turninfo']=self._json_for_turn_info()
+        return jsonData
+ 
     def _state_add_players(self, playerData):
         self._players = playerData
         self._num_players = len(self._players)
@@ -305,52 +364,67 @@ class ElGrandeGameState(pyspiel.State):
         self._playersleft = [self._get_pid(p) for p in self._players]
         self._playersdone = []
 
+    def _json_for_players(self):
+        return self._players
  
     def _state_add_king(self,region_name):
         region_id = self._get_rid(region_name)
-        assert(region_id < _ST_BDX_CASTILLO )
-        self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_GRANDE_KING] |= (pow(2,_ST_MASK_KING))
-        
+        assert(region_id < self._game._castillo_idx )
+        self._board_state[region_id,_ST_BDY_GRANDE_KING] |= (pow(2,_ST_MASK_KING))
+
+    def _json_for_king(self):
+        return self._game._regions[self._king_region()]
+    
     def _state_add_cabs_grandes(self,data):
         for player_name in data.keys():
             player_id = self._get_pid(player_name)
             for key in data[player_name].keys():
                 if key=="grande":
                     region_id = self._get_rid(data[player_name][key])
-                    assert(region_id < _ST_BDX_CASTILLO)
-                    self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_GRANDE_KING] |= (pow(2,player_id))
+                    assert(region_id < self._game._castillo_idx)
+                    self._board_state[region_id,_ST_BDY_GRANDE_KING] |= (pow(2,player_id))
                 else:
                     region_id = self._get_rid(key)
-                    assert(region_id < _ST_BDX_END)
-                    self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_CABS + player_id]=data[player_name][key]                                                                                                     
+                    assert(region_id < self._game._num_cab_areas)
+                    self._board_state[region_id,_ST_BDY_CABS + player_id]=data[player_name][key]           
+   
+    def _json_for_pieces(self):
+        jsonData={}
+        for p in range(self._num_players):
+            pieceData={}
+            for r in range(self._game._num_cab_areas):
+                n=int(self._region_cabcount(r,p))
+                if n>0:
+                    pieceData[self._game._regions[r]]=n
+            pieceData['grande']=self._game._regions[self._grande_region(p)]
+            jsonData[self._players[p]]=pieceData
+        return jsonData
 
-    def _region_has_grande(self,region_id,player_id):
-        return self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_GRANDE_KING] & (pow(2,player_id)) == (pow(2,player_id))
+    def _state_add_card_info(self,jsonData):
+        self._acard_state = np.array([_ACT_CARD_IDS[a] for a in jsonData['action_cards']])
+        self._round_cards = np.array(jsonData['round_cards'])
+        self._pcard_state = np.full(self._game._num_power_cards,0)
+        self._past_pcard_state = np.full(self._game._num_power_cards,0)
+        for pl in jsonData['power_cards']:
+            self._pcard_state[jsonData['power_cards'][pl]-1] |= pow(2,self._get_pid(pl))
+        for pl in jsonData['past_power']:
+            for pcard in jsonData['past_power'][pl]:
+                self._past_pcard_state[pcard-1] |= pow(2,self._get_pid(pl))
 
-    def _grande_region(self,player_id):
-        return int(np.where(self._board_state[:,_ST_BDY_GRANDE_KING]& (pow(2,player_id))>0)[0][0])
-    
-    def _region_cabcount(self,region_id,player_id):
-        return self._board_state[(_ST_BDX_REGIONS+region_id),_ST_BDY_CABS + player_id]
-    
-    def _region_is_secret_choice(self,region_id,player_id=-1):
-        if player_id<0:
-            player_id=self._cur_player
-        return (self._board_state[region_id,_ST_BDY_SECRET] & pow(2,player_id) > 0)
-
-    def _has_secret_region(self,player_id=-1):
-        if player_id<0:
-            player_id=self._cur_player
-        if len(np.where(self._board_state[:,_ST_BDY_SECRET]& pow(2,player_id) > 0)[0])>0:
-            return True
-        else:
-            return False
-
-    def _secret_region(self,player_id=-1):
-        if player_id<0:
-            player_id=self._cur_player
-        return np.where(self._board_state[:,_ST_BDY_SECRET]& pow(2,player_id) > 0)[0][0]
-
+    def _json_for_card_info(self):
+        #represent card states as strings, round info as int round numbers
+        jsonData={}
+        jsonData['action_cards']=[_ACT_CARD_STATES[a] for a in self._acard_state]
+        jsonData['round_cards']=self._acard_round.tolist()
+        jsonData['power_cards']={}
+        jsonData['past_power']={}
+        for p in range(self._num_players):
+            cur_card = self._get_power_card(p)
+            if len(cur_card)==1:
+                jsonData['power_cards'][self._players[p]]=int(cur_card[0]+1)
+            jsonData['past_power'][self._players[p]] = [int(pc+1) for pc in self._get_past_power_cards(p)] 
+        return jsonData
+                                                                              
     def _set_rewards(self,new_scores):
         #support both TERMINAL and REWARD mode
         self._turn_state[_ST_TN_SCORES:_ST_TN_SCORES+self._num_players]+=new_scores
@@ -362,13 +436,13 @@ class ElGrandeGameState(pyspiel.State):
     def _next_score_step_player(self):
         #find another player who needs to make a secret region choice in scoring round
         #return -1 if no such player
-        waiting_players = [i for i in range(self._num_players) if not self._has_secret_region(i) and self._board_state[pieces._CASTILLO,i]>0]
+        waiting_players = [i for i in range(self._num_players) if not self._has_secret_region(i) and self._region_cabcount(self._game._castillo_idx,i)>0]
         if len(waiting_players)>0:
             return waiting_players[0]
         else:
             return -1
 
-    def _state_add_deck_info(self,cards,pastcards,deckpositions,data):
+    def _state_add_tts_deck_info(self,cards,pastcards,deckpositions,data):
         #action cards, sorted by deck
         #self._dealing=False
         round=data['round']
@@ -417,12 +491,33 @@ class ElGrandeGameState(pyspiel.State):
                 self._acard_state[card_id]=_ST_AC_DONE
 
     def _state_add_turn_info(self,data):
+        self._turn_state[_ST_TN_ROUND]=data['round']
+        self._turn_state[_ST_TN_PHASE]=self._get_phaseid(data['phase'])
+        for player_name in data['scores'].keys():
+            player_id = self._get_pid(player_name)
+            score = data['scores'][player_name]
+            self._turn_state[_ST_TN_SCORES+player_id]=score
+        self._playersleft=[self._get_pid(p) for p in data['playersleft']]
+        self._playersdone=[self._get_pid(p) for p in data['playersdone']]
+        self._cur_player = self._playersleft[0] if len(self._playersleft)>0 else 0
+
+    def _json_for_turn_info(self):
+        jsonData={}
+        jsonData['round']=int(self._get_round())
+        jsonData['phase']=self._get_current_phase_name()
+        cscores=self._current_score()
+        jsonData['scores']={self._get_player_name(p):int(cscores[p]) for p in range(self._num_players)}
+        jsonData['playersdone']=[self._get_player_name(p) for p in self._playersdone]
+        jsonData['playersleft']=[self._get_player_name(p) for p in self._playersleft]
+        return jsonData
+
+    def _state_add_tts_turn_info(self,data):
         #power cards
         if len(data['powercards'])>0:
             for player_name in data['powercards'].keys():
                 player_id = self._get_pid(player_name)
                 power_id = int(data['powercards'][player_name]) 
-                assert((power_id-1) <= _NUM_POWER_CARDS and power_id > 0) #power_id from 1 to _NUM_POWER_CARDS
+                assert((power_id-1) <= self._game._num_power_cards and power_id > 0) #power_id from 1 to self._game._num_power_cards
                 self._pcard_state[(power_id-1)] |= pow(2,player_id)
 
         #past power cards
@@ -430,7 +525,7 @@ class ElGrandeGameState(pyspiel.State):
             for player_name in data['powerplayed'].keys():
                 player_id = self._get_pid(player_name)
                 for power_id in data['powerplayed'][player_name]:
-                    assert((power_id-1) <= _NUM_POWER_CARDS and power_id > 0) #power_id from 1 to _NUM_POWER_CARDS
+                    assert((power_id-1) <= self._game._num_power_cards and power_id > 0) #power_id from 1 to self._game._num_power_cards
                     self._past_pcard_state[(power_id-1)] |= pow(2,player_id)
 
         #round
@@ -461,7 +556,7 @@ class ElGrandeGameState(pyspiel.State):
             #scoring phase with no score action - skip to next
             self._turn_state[_ST_TN_PHASE] = _ST_PHASE_POWER
             self._turn_state[_ST_TN_ROUND] += 1
-            self._acard_state = np.array([1 if self._acard_round[i]==self._turn_state[_ST_TN_ROUND] else self._acard_state[i] for i in range(_NUM_ACTION_CARDS)])
+            self._acard_state = np.array([1 if self._acard_round[i]==self._turn_state[_ST_TN_ROUND] else self._acard_state[i] for i in range(self._game._num_action_cards)])
             self._acard_state[-1]=1
             self._playersleft=[self._get_pid(p) for p in data['playersleft']]
             self._playersdone=[self._get_pid(p) for p in data['playersdone']]
@@ -475,20 +570,21 @@ class ElGrandeGameState(pyspiel.State):
     #functions for doing actions
     
     def _deal_actions(self):
-        #_DECK_ENDS = [11,9,11,11,1] #hard coded number of cards per deck
+        deck_ends=[len(deck) for deck in self._game._decks]
         dlists = []
-        for deck in pieces._DECKTRACK:
+        for deck in self._game._decks:
             deck_id=int(deck[4]) #5th character of 'Deckn'
-            cards = [i for i in range(_DECK_ENDS[deck_id-1])  if self._acard_state[self._get_cid(pieces._DECKTRACK[deck][i])]==_ST_AC_UNPLAYED]
+            cards = [i for i in range(deck_ends[deck_id-1])  if self._acard_state[self._get_cid(self._game._decks[deck][i])]==_ST_AC_UNPLAYED]
             dlists = dlists+[cards]
-        action_list = [a + _DECK_ENDS[0]*(b + _DECK_ENDS[1]*(c + _DECK_ENDS[2]*d)) for a in dlists[0] for b in dlists[1] for c in dlists[2] for d in dlists[3]]
+        action_list = [a + deck_ends[0]*(b + deck_ends[1]*(c + deck_ends[2]*d)) for a in dlists[0] for b in dlists[1] for c in dlists[2] for d in dlists[3]]
         return sorted(action_list)
 
     def _deck_pos_for_action(self,action):
-        deck1 = action%_DECK_ENDS[0]
-        deck2 = (action%(_DECK_ENDS[0] * _DECK_ENDS[1]))//_DECK_ENDS[0]
-        deck3 = (action%(_DECK_ENDS[0] * _DECK_ENDS[1] * _DECK_ENDS[2]))//(_DECK_ENDS[0] * _DECK_ENDS[1])
-        deck4 = action //(_DECK_ENDS[0] * _DECK_ENDS[1] * _DECK_ENDS[2])
+        deck_ends=[len(deck) for deck in self._game._decks]
+        deck1 = action%deck_ends[0]
+        deck2 = (action%(deck_ends[0] * deck_ends[1]))//deck_ends[0]
+        deck3 = (action%(deck_ends[0] * deck_ends[1] * deck_ends[2]))//(deck_ends[0] * deck_ends[1])
+        deck4 = action //(deck_ends[0] * deck_ends[1] * deck_ends[2])
         deck5 = 0 # single deck5 card is always chosen
         return (deck1,deck2,deck3,deck4,deck5)
     
@@ -498,19 +594,21 @@ class ElGrandeGameState(pyspiel.State):
         deck_positions = self._deck_pos_for_action(action)
         for i in range(len(deck_positions)):
             deck="Deck"+str(i+1)
-            self._acard_state[self._get_cid(pieces._DECKTRACK[deck][deck_positions[i]])]=_ST_AC_DEALT
+            self._acard_state[self._get_cid(self._game._decks[deck_positions[i]])]=_ST_AC_DEALT
         self._turn_state[_ST_TN_PHASE]=self._get_phaseid('power')
         self._dealing=False
              
     def _cards_for_action(self,action):
         deck_positions = self._deck_pos_for_action(action)
-        guids = [pieces._DECKTRACK["Deck"+str(i+1)][deck_positions[i]] for i in range(len(deck_positions))]
+        guids = [self._game._decks["Deck"+str(i+1)][deck_positions[i]] for i in range(len(deck_positions))]
         return guids
              
-    def _assign_power(self,power_id):
+    def _assign_power(self,power_id,player_id=-1):
         #power_id is array position 0..12
-        self._pcard_state[power_id] |= pow(2,self._cur_player)
-        self._past_pcard_state[power_id] |= pow(2,self._cur_player)
+        if player_id==-1:
+            player_id = self._cur_player
+        self._pcard_state[power_id] |= pow(2,player_id)
+        self._past_pcard_state[power_id] |= pow(2,player_id)
         
     def _retrieve_power(self,power_id):
         self._past_pcard_state[power_id] -= pow(2,self._cur_player)
@@ -518,36 +616,36 @@ class ElGrandeGameState(pyspiel.State):
     def _available_powers(self):
         #power cards available to current player in array position 0..12
         #check everyone's current cards, and current player's past 
-        in_deck = [p for p in range(_NUM_POWER_CARDS) if self._pcard_state[p]==0]
-        unused = [p for p in range(_NUM_POWER_CARDS) if self._past_pcard_state[p] & pow(2,self._cur_player)==0]
-        return [p for p in range(_NUM_POWER_CARDS) if p in in_deck and p in unused]
+        in_deck = [p for p in range(self._game._num_power_cards) if self._pcard_state[p]==0]
+        unused = [p for p in range(self._game._num_power_cards) if self._past_pcard_state[p] & pow(2,self._cur_player)==0]
+        return [p for p in range(self._game._num_power_cards) if p in in_deck and p in unused]
 
     def _set_secret_region(self,region_id,player_id=-1):
         if player_id==-1:
             player_id = self._cur_player
         #ensure only one set at a time
         mask = pow(2,(_MAX_PLAYERS+1))-pow(2,player_id)-1 #masks out everything except this player
-        self._board_state[:_ST_BDX_COURT,_ST_BDY_SECRET] &= np.full(_ST_BDX_COURT,mask)
+        self._board_state[:self._game._court_idx,_ST_BDY_SECRET] &= np.full(self._game._court_idx,mask)
         self._board_state[region_id,_ST_BDY_SECRET] |= pow(2,player_id)
 
     def _move_grande(self,region_id):
         #mask out current player's grande from everywhere else
         #note the mask for this has to fit one entry per grande for all players, plus also king
         mask = pow(2,(_MAX_PLAYERS+2))-pow(2,self._cur_player)-1 #masks out everything except this player
-        self._board_state[:_ST_BDX_COURT,_ST_BDY_GRANDE_KING] &= np.full(_ST_BDX_COURT,mask)
+        self._board_state[:self._game._court_idx,_ST_BDY_GRANDE_KING] &= np.full(self._game._court_idx,mask)
         self._board_state[region_id,_ST_BDY_GRANDE_KING] |= pow(2,self._cur_player)
         
     def _move_king(self,region_id):
         mask = pow(2,(_MAX_PLAYERS+2))-pow(2,_ST_MASK_KING)-1 #masks out everything except king
-        self._board_state[:_ST_BDX_COURT,_ST_BDY_GRANDE_KING] &= np.full(_ST_BDX_COURT,mask)
+        self._board_state[:self._game._court_idx,_ST_BDY_GRANDE_KING] &= np.full(self._game._court_idx,mask)
         self._board_state[region_id,_ST_BDY_GRANDE_KING] |= pow(2,_ST_MASK_KING)
 
     def _move_scoreboard(self,board_id,region_id):
         points = self._scoreboards[board_id]['points']
-        self._rewards[region_id]=points
+        self._points[region_id]=points
         oldregion = self._scoreboards[board_id].get('region',-1)
-        if oldregion>0 and oldregion<len(self._rewards):
-            self._rewards[oldregion] = pieces._POINTS[oldregion]
+        if oldregion>=0 and oldregion<len(self._points):
+            self._points[oldregion] = self._game._points[oldregion]
         self._scoreboards[board_id]['region']=region_id
 
     def _move_one_cab(self,from_region, to_region, of_player):
@@ -565,7 +663,24 @@ class ElGrandeGameState(pyspiel.State):
  
         #check if the patterns are all filled, and if so, set moving to false
         self._check_move_patterns_filled()
-         
+        
+    def _quickmove_cabs(self, from_region, to_region, num=-1, of_player=-1):
+        #shift cabs about without doing any registration or tracking
+        if of_player<0:
+            of_player=self._cur_player
+        if num<0:
+            num=self._board_state[from_region,of_player]
+        else:
+            num=min(num,self._board_state[from_region,of_player])
+        self._board_state[from_region,of_player] = self._board_state[from_region,of_player] - num
+        self._board_state[to_region,of_player] = self._board_state[to_region,of_player] + num
+ 
+    def _move_castillo_pieces(self):
+        for i in range(self._num_players):
+            if self._has_secret_region(i):
+                region = self._secret_region(i)
+                self._quickmove_cabs(self._game._castillo_idx,region,-1,i)
+    
     def _region_str(self,region_id):
         retstr = "|".join([str(i) for i in self._board_state[region_id,_ST_BDY_CABS:(_ST_BDY_CABS + self._num_players)]])
         grandes = [str(i) for i in range(self._num_players) if self._region_has_grande(region_id,i)]
@@ -573,13 +688,13 @@ class ElGrandeGameState(pyspiel.State):
             retstr = retstr + " G(" + "|".join(grandes) + ")"
         if self._region_has_king(region_id):
             retstr = retstr + " K"
-        retstr = retstr.ljust(18," ")+ "-  " + pieces._REGIONS[region_id].rjust(18," ")
-        if region_id < _NUM_EXT_REGIONS:
-            retstr = retstr + str(self._rewards[region_id])
+        retstr = retstr.ljust(18," ")+ "-  " + self._game._regions[region_id].rjust(18," ")
+        if region_id < self._game._num_ext_regions:
+            retstr = retstr + str(self._points[region_id])
         return retstr
     
     def _power_str(self,player_id):
-        current = np.where(self._pcard_state & pow(2,player_id) == pow(2,player_id))[0] 
+        current = self._get_power_card(player_id) 
         if len(current)==0:
             cstr = "X"
         else:
@@ -588,29 +703,21 @@ class ElGrandeGameState(pyspiel.State):
         return cstr + " (" + ",".join(past) + ")" + "  -  playerid " + str(player_id)
 
     def _acard_str(self,cardpos):
-        cardstr = pieces._CARDS[pieces._CARDTRACK[cardpos]]['name']
+        cardstr = self._game._cardtrack[cardpos]
         if self._acard_state[cardpos]==_ST_AC_DEALT:
             return cardstr
         else:
             return '('+cardstr+')'
  
     def _action_str(self):
-        activecards = [c for c in range(_NUM_ACTION_CARDS) if self._acard_state[c]!=_ST_AC_UNPLAYED and self._acard_state[c]!= _ST_AC_DONE]
-        assert(len(activecards)<=_NUM_PLAYABLE_DECKS)
+        activecards = [c for c in range(self._game._num_action_cards) if self._acard_state[c]!=_ST_AC_UNPLAYED and self._acard_state[c]!= _ST_AC_DONE]
+        assert(len(activecards)<=self._game._num_decks)
         names = [self._acard_str(c) for c in activecards]
         return "|".join(names)
     
     def _turn_info_str(self):
         return "Round "+ str(self._turn_state[_ST_TN_ROUND]) + " " + _PHASE_NAMES[self._turn_state[_ST_TN_PHASE]] + "(player "+str(self._cur_player)+") - Cumulative Scores " +str(self._current_score())    
    
-    def _move_castillo_pieces(self):
-        for i in range(self._num_players):
-            if self._has_secret_region(i):
-                region = self._secret_region(i)
-                ncabs=self._board_state[pieces._CASTILLO,i]
-                self._board_state[pieces._CASTILLO,i]=0
-                self._board_state[region,i]+=ncabs
-    
     def _unique_score(self):
         #determine any doubles before scoring
         regions=[]
@@ -633,23 +740,23 @@ class ElGrandeGameState(pyspiel.State):
         choice_step=False
         region=details.get('region','')
         if region=='fours':
-            for i in range(_NUM_EXT_REGIONS): 
-                if self._rewards[i][0]==4:
+            for i in range(self._game._num_ext_regions): 
+                if self._points[i][0]==4:
                     final_scores = final_scores + self._score_one_region(i)
         elif region=='fives':
-            for i in range(_NUM_EXT_REGIONS):
-                if self._rewards[i][0]==5:
+            for i in range(self._game._num_ext_regions):
+                if self._points[i][0]==5:
                     final_scores = final_scores + self._score_one_region(i)
         elif region=='sixsevens':
-            for i in range(_NUM_EXT_REGIONS):
-                if self._rewards[i][0]==6 or self._rewards[i][0]==7:
+            for i in range(self._game._num_ext_regions):
+                if self._points[i][0]==6 or self._points[i][0]==7:
                     final_scores = final_scores + self._score_one_region(i)
         elif region=='castillo':
-            final_scores = final_scores + self._score_one_region(pieces._CASTILLO)
+            final_scores = final_scores + self._score_one_region(self._game._castillo_idx)
         elif region=='locab':
             loregions=[]
             currentlow=100
-            for i in range(_NUM_EXT_REGIONS):
+            for i in range(self._game._num_ext_regions):
                 this_count=sum(self._board_state[i,:self._num_players])
                 if this_count<currentlow and this_count>0:
                     currentlow=this_count
@@ -661,7 +768,7 @@ class ElGrandeGameState(pyspiel.State):
         elif region=='hicab':
             hiregions=[]
             currenthigh=0
-            for i in range(_NUM_EXT_REGIONS):
+            for i in range(self._game._num_ext_regions):
                 this_count=sum(self._board_state[i,:self._num_players])
                 if this_count>currenthigh:
                     currenthigh=this_count
@@ -672,7 +779,7 @@ class ElGrandeGameState(pyspiel.State):
                 final_scores = final_scores + self._score_one_region(i)
         elif region=='selfchoose':
             #choose a region to score - see if we did this already
-            regions = [i for i in range(_NUM_REGIONS) if self._region_is_secret_choice(i)]
+            regions = [i for i in range(self._game._num_regions) if self._region_is_secret_choice(i)]
             assert(len(regions)<=1)
             if len(regions)==0:
                 choice_step=True
@@ -680,15 +787,15 @@ class ElGrandeGameState(pyspiel.State):
                 final_scores = final_scores + self._score_one_region(regions[0])
         else:
             #last possibility is the one where we just score the top in all regions
-            for i in range(_NUM_EXT_REGIONS):
+            for i in range(self._game._num_ext_regions):
                 final_scores = final_scores + self._score_one_region(i,True)
                 
         if not choice_step:
             self._set_rewards(final_scores)
 
     def _rank_region(self, region):
-        assert(region>=0 and region<_NUM_EXT_REGIONS) 
-        cab_counts = self._board_state[_ST_BDX_REGIONS+region,_ST_BDY_CABS : (_ST_BDY_CABS+self._num_players) ]
+        assert(region>=0 and region<self._game._num_ext_regions) 
+        cab_counts = self._board_state[region,_ST_BDY_CABS : (_ST_BDY_CABS+self._num_players) ]
         ranks={}
         for idx in range(len(cab_counts)):
             cp=cab_counts[idx]
@@ -710,8 +817,8 @@ class ElGrandeGameState(pyspiel.State):
         return ranks 
 
     def _score_one_region(self,region,top_only=False):
-        assert(region>=0 and region<_NUM_EXT_REGIONS) 
-        cab_counts = self._board_state[_ST_BDX_REGIONS+region,_ST_BDY_CABS : (_ST_BDY_CABS+self._num_players) ]
+        assert(region>=0 and region<self._game._num_ext_regions) 
+        cab_counts = self._board_state[region,_ST_BDY_CABS : (_ST_BDY_CABS+self._num_players) ]
     
         #rank and score the counts
         ranks = self._rank_region(region)
@@ -720,7 +827,7 @@ class ElGrandeGameState(pyspiel.State):
         for k in ranks.keys():
             if ranks[k]>0 and ranks[k]<=3:
                 if ranks[k]==1 or (not top_only):
-                    final_scores[k]=self._rewards[region][ranks[k]-1]
+                    final_scores[k]=self._points[region][ranks[k]-1]
             if ranks[k]==1:
                 if self._region_has_grande(region,k):
                     final_scores[k]=final_scores[k]+2
@@ -732,7 +839,7 @@ class ElGrandeGameState(pyspiel.State):
     
     def _score_all_regions(self):
         final_scores=np.full(self._num_players,0)
-        for r in range(_NUM_EXT_REGIONS):
+        for r in range(self._game._num_ext_regions):
             final_scores = final_scores+self._score_one_region(r)
         return final_scores
    
@@ -749,20 +856,18 @@ class ElGrandeGameState(pyspiel.State):
     def _pack_court(self):
         #move the correct number of caballeros from province to court, at the point where player action commences
         power_id = np.where(self._pcard_state & pow(2,self._cur_player) == pow(2,self._cur_player))[0][0]
-        n_cabs = min(_POWER_CABS[power_id],self._board_state[_ST_BDX_PROVINCE,self._cur_player])
-        self._board_state[_ST_BDX_PROVINCE,self._cur_player] -= n_cabs
-        self._board_state[_ST_BDX_COURT,self._cur_player] += n_cabs
+        self._quickmove_cabs(self._game._province_idx,self._game._court_idx,self._game._power_cabs[power_id])
                            
         
     def _setup_caballero_placement(self):
         #set correct state information for where we will be allowed to place caballeros
-        self._movement_tracking['from']=[_ST_BDX_COURT]
+        self._movement_tracking['from']=[self._game._court_idx]
         self._movement_tracking['lockfrom']=False
-        self._movement_tracking['to']=pieces._NEIGHBORS[self._king_region()]+[_ST_BDX_CASTILLO]
+        self._movement_tracking['to']=self._game._neighbors[self._king_region()]+[self._game._castillo_idx]
         self._movement_tracking['lockto']=False
         self._movement_tracking['moving'] = True
-        card = self._get_current_card()
-        n_cabs = min(int(card["name"][4]),self._board_state[_ST_BDX_COURT,self._cur_player])
+        card_name = self._get_current_card_name()
+        n_cabs = min(int(card_name[4]),self._region_cabcount(self._game._court_idx,self._cur_player))
         pattern = {'player':self._cur_player,'allowed':True,'max':n_cabs,'min':0}
         self._movement_tracking['patterns']=[pattern]
         self._movement_tracking['prev']=[] #no movements done in this set of substeps yet
@@ -802,16 +907,15 @@ class ElGrandeGameState(pyspiel.State):
         if action_type == 'score':
             self._special_score(card['details'])
         elif action_type == 'uniquescore':
-            self._setup_secret_choices(0,'uniquescore')
-            #self._unique_score(action)
+            self._setup_response_vars(0,'uniquescore','secret')
         elif action_type == 'move':
             #Province/Provinceall/Eviction
             fromreg = card['details']['from']['region']
             if fromreg=='ownerchoose':
                 fnl = 'alltoprovince' if card['details']['from']['condition']=='1' else 'twotoprovince'
-                self._setup_secret_choices(card['details']['from']['condition'],fnl)
+                self._setup_response_vars(card['details']['from']['condition'],fnl,'secret')
             else:
-                self._setup_secret_choices(0,'toregion')
+                self._setup_response_vars(0,'toregion','secret')
 
 
     def _do_caballero_move_info(self,card_details):  
@@ -826,9 +930,9 @@ class ElGrandeGameState(pyspiel.State):
                 self._movement_tracking[v]=[self._get_rid(card_details[v]['region'])]
             elif card_details[v]['region']=='selfchoose':
                 #current King's region shouldn't be in the list
-                the_regions=[i for i in range(_NUM_REGIONS) if not self._region_has_king(i)]
+                the_regions=[i for i in range(self._game._num_regions) if not self._region_has_king(i)]
                 if v=='to':
-                    the_regions = the_regions + [_ST_BDX_CASTILLO]
+                    the_regions = the_regions + [self._game._castillo_idx]
                 self._movement_tracking[v]=the_regions
             else:
                 #placeholder for some sort of owner choice
@@ -887,18 +991,7 @@ class ElGrandeGameState(pyspiel.State):
         if card_details['from']['region'] =='ownerchooseplus':
             #'Angry King' card
             #Setup move info and change player to responder
-            self._rsp_player = self._cur_player
-            self._rsp_phase = self._turn_state[_ST_TN_PHASE]
-            self._rsp_steps = []
-            self._rsp_finalize = None
-            #no secret choice needed from current player
-            players_to_choose = [(i+self._cur_player)%self._num_players for i in range(1,self._num_players)]
-            number_to_send = int(card_details['number'])
-            for p in players_to_choose:
-                for i in range(number_to_send):
-                    self._rsp_steps.append({'player':p,'court':True,'cabs':1,'do':'toprovince'})
-            self._cur_player = self._rsp_steps[0]['player']
-            self._turn_state[_ST_TN_PHASE]=_ST_PHASE_RESPONSE
+            self._setup_response_vars(int(card_details['number']),'','move')
         else:
             #'Decay','Decayall' and 'Court' 
             sendCount=card_details['number']
@@ -907,13 +1000,7 @@ class ElGrandeGameState(pyspiel.State):
                 if (card_details['player']=='foreign' and pl==self._cur_player) or  (card_details['player']=='self' and pl!=self._cur_player):
                     sendThis=False
                 if sendThis:
-                    if sendCount<0:
-                        #figure out how much the 'all' in 'send all' is
-                        ncabs= self._board_state[fromreg[0],_ST_BDY_CABS+pl]
-                    else:
-                        ncabs = min(sendCount,self._board_state[fromreg[0],_ST_BDY_CABS+pl]) 
-                    self._board_state[fromreg[0],_ST_BDY_CABS+pl] -= ncabs
-                    self._board_state[toreg[0],_ST_BDY_CABS+pl] += ncabs
+                    self._quickmove_cabs(fromreg[0],toreg[0],sendCount,pl)
 
         #null-out movement info, since we've done the move
         self._init_move_info()
@@ -939,8 +1026,7 @@ class ElGrandeGameState(pyspiel.State):
         self._movement_tracking['patterns'] = self._movement_tracking.get('patterns',[]) + [pattern]
 
 
-
-    def _setup_secret_choices(self,condition,finalStep):
+    def _setup_response_vars(self,condition,finalStep,acttype):
         #set response data so that opponents can make secret choices
         self._rsp_player = self._cur_player
         self._rsp_phase =  self._turn_state[_ST_TN_PHASE]
@@ -948,19 +1034,25 @@ class ElGrandeGameState(pyspiel.State):
         self._rsp_finalize = finalStep
         #not for secret choice needed from current player
         players_to_choose = [(i+self._cur_player)%self._num_players for i in range(1,self._num_players)]
-        for p in players_to_choose:
-            self._rsp_steps.append({'player':p,'court':False,'cabs':int(condition),'do':'setsecret'})
+        if acttype=='move':
+            #'Angry King' - each player moves caballeros back to province in order
+            for p in players_to_choose:
+                for i in range(condition):
+                    self._rsp_steps.append({'player':p,'court':True,'cabs':1,'do':'toprovince'})
+        else:
+            # Province/Provinceall/Eviction/unique score - each player makes one secret choice
+            for p in players_to_choose:
+                self._rsp_steps.append({'player':p,'court':False,'cabs':int(condition),'do':'setsecret'})
         self._cur_player = self._rsp_steps[0]['player']
         self._turn_state[_ST_TN_PHASE]=_ST_PHASE_RESPONSE
 
         self._init_move_info()
-        return []
 
     def _king_placement_details(self,card_details):
         if card_details['condition']=='all':
-            return [_ACT_MOVE_KINGS+i for i in range(_NUM_REGIONS)]
+            return [_ACT_MOVE_KINGS+i for i in range(self._game._num_regions)]
         else:
-            return [_ACT_MOVE_KINGS+i for i in range(_NUM_REGIONS) if i in pieces._NEIGHBORS[self._king_region()]]
+            return [_ACT_MOVE_KINGS+i for i in range(self._game._num_regions) if i in self._game._neighbors[self._king_region()]]
 
     def _set_next_response_vars(self):
         #move on to next thing in response
@@ -968,37 +1060,31 @@ class ElGrandeGameState(pyspiel.State):
         if len(self._rsp_steps)>0:
             self._cur_player=self._rsp_steps[0]['player']
         else:
-            self._finalizeResponse()
+            self._finalize_response()
             self._cur_player = self._rsp_player
             self._turn_state[_ST_TN_PHASE]=self._rsp_phase
             self._rsp_player = None
             self._rsp_phase = None
             self._rsp_finalize = None
 
-    def _finalizeResponse(self):
+    def _finalize_response(self):
         #finalize for Province/ProvinceAll/Eviction/Deck4_Special 
         if self._rsp_finalize=='alltoprovince':
             #send everything from selected regions to province
             for p in range(self._num_players):
                 region=self._secret_region(p)
-                ncabs=self._board_state[region,p]
-                self._board_state[region,p]=0
-                self._board_state[pieces._PROVINCE,p]+=ncabs
+                self._quickmove_cabs(region,self._game._province_idx,-1,p)
         if self._rsp_finalize=='twotoprovince':
             #send two from selected regions to province
             for p in range(self._num_players):
                 region=self._secret_region(p)
-                ncabs=min(2,self._board_state[region,p])
-                self._board_state[region,p]-=ncabs
-                self._board_state[pieces._PROVINCE,p]+=ncabs
+                self._quickmove_cabs(region,self._game._province_idx,2,p)
         elif self._rsp_finalize=='toregion':
             #send everything from region of rsp player to others' region choices
             fromreg = self._secret_region(self._rsp_player)
             for p in range(self._num_players):
                 toreg = self._secret_region(p)
-                ncabs = self._board_state[fromreg,p]
-                self._board_state[fromreg,p]=0
-                self._board_state[toreg,p]+=ncabs
+                self._quickmove_cabs(fromreg,toreg,-1,p)
         elif self._rsp_finalize=='uniquescore':
             self._unique_score()
 
@@ -1011,7 +1097,7 @@ class ElGrandeGameState(pyspiel.State):
             checkregionfrom = ccard['details']['from']['region']
             checkregionto = ccard['details']['to']['region']
             if checkregionfrom =='ownerchoose' or checkregionto == 'ownerchoose':
-                actions = [i + _ACT_CHOOSE_SECRETS for i in range(_NUM_REGIONS) if self._board_state[i,self._cur_player]>=self._movement_tracking.get('fromcondition',0) and not self._region_has_king(i)]
+                actions = [i + _ACT_CHOOSE_SECRETS for i in range(self._game._num_regions) if self._board_state[i,self._cur_player]>=self._movement_tracking.get('fromcondition',0) and not self._region_has_king(i)]
                 return sorted(actions)
         for fromreg in self._movement_tracking['from']:
             for toreg in self._movement_tracking['to']:
@@ -1032,7 +1118,7 @@ class ElGrandeGameState(pyspiel.State):
                 for player in players:
                     if self._board_state[fromreg,player] >0:
                         #there is a caballero here of the correct colour, so this move action is okay
-                        actions.append(_ACT_CAB_MOVES + player + _MAX_PLAYERS*(toreg + _NUM_CAB_AREAS*fromreg))
+                        actions.append(_ACT_CAB_MOVES + player + _MAX_PLAYERS*(toreg + self._game._num_cab_areas*fromreg))
         
         #during a movement_tracking episode (eg, moving cabs around the board)
         #restrict actions so we don't get extra possibilities from one substep
@@ -1068,11 +1154,11 @@ class ElGrandeGameState(pyspiel.State):
        
     def _get_region_actions_for_rsp_condition(self):
         #get from the first condition in the response list
-        actions = [(i + _ACT_CHOOSE_SECRETS) for i in range (_NUM_REGIONS) if 
+        actions = [(i + _ACT_CHOOSE_SECRETS) for i in range (self._game._num_regions) if 
             self._region_cabcount(i,self._rsp_steps[0]['player'])>=self._rsp_steps[0]['cabs'] and 
             not self._region_has_king(i)]
         if self._rsp_steps[0]['court']:
-            actions = actions + [_ACT_CHOOSE_SECRETS + pieces._COURT] 
+            actions = actions + [_ACT_CHOOSE_SECRETS + self._game._court_idx] 
         return actions
          
         
@@ -1090,7 +1176,7 @@ class ElGrandeGameState(pyspiel.State):
             return self._king_placement_details(activecard['details'])
         elif valid_action in ['score','uniquescore']:
             #if a 'score' action ends up here, we need to do region choice
-            actions = actions + [(i + _ACT_CHOOSE_SECRETS) for i in range(_NUM_REGIONS) if not self._region_has_king(i)]
+            actions = actions + [(i + _ACT_CHOOSE_SECRETS) for i in range(self._game._num_regions) if not self._region_has_king(i)]
             return actions
         elif valid_action=='choose':
             #check if there is a movement pattern - if so, follow it, if not, ask whether we're on 1 or 2
@@ -1099,13 +1185,13 @@ class ElGrandeGameState(pyspiel.State):
             else:
                 return[_ACT_DECIDE_ACT,_ACT_DECIDE_ACT_ALT]
         elif valid_action=='power':
-            actions = actions + [(_ACT_RETRIEVE_POWERS + i) for i in range(_NUM_POWER_CARDS) if self._past_pcard_state[i] & pow(2,self._cur_player) > 0]
+            actions = actions + [(_ACT_RETRIEVE_POWERS + i) for i in range(self._game._num_power_cards) if self._past_pcard_state[i] & pow(2,self._cur_player) > 0]
             return actions
         elif valid_action=='grande':
-            actions = actions + [(i + _ACT_MOVE_GRANDES) for i in range(_NUM_REGIONS) if not self._region_has_king(i)]
+            actions = actions + [(i + _ACT_MOVE_GRANDES) for i in range(self._game._num_regions) if not self._region_has_king(i)]
             return actions
         elif valid_action=='scoreboard':
-            actions = actions + [(i+(j*_NUM_REGIONS) + _ACT_MOVE_SCOREBOARDS) for i in range(_NUM_REGIONS) for j in range(_NUM_SCOREBOARDS) if not self._region_has_king(i)]
+            actions = actions + [(i+(j*self._game._num_regions) + _ACT_MOVE_SCOREBOARDS) for i in range(self._game._num_regions) for j in range(self._game._num_scoreboards) if not self._region_has_king(i)]
             return sorted(actions)
 
 
@@ -1115,6 +1201,7 @@ class ElGrandeGameState(pyspiel.State):
             #set current player
             self._cur_player = self._playersleft[1]
             #move all players up one
+            self._playersdone = self._playersdone + self._playersleft[:1] 
             self._playersleft = self._playersleft[1:]
         else:
             #redo the whole queue, and move on to 'action' phase
@@ -1152,6 +1239,7 @@ class ElGrandeGameState(pyspiel.State):
             #set current player
             self._cur_player = self._playersleft[1]
             #move all players up one
+            self._playersdone = self._playersdone + self._playersleft[:1]
             self._playersleft = self._playersleft[1:]
             self._turn_state[_ST_TN_PHASE]=_ST_PHASE_ACTION
         else:
@@ -1167,7 +1255,7 @@ class ElGrandeGameState(pyspiel.State):
     def _after_score_step(self):
         #if everybody who needs to has chosen a secret region, do the scoring
         #score the castillo, move castillo pieces out, then score everything
-        new_scores=self._score_one_region(pieces._CASTILLO)
+        new_scores=self._score_one_region(self._game._castillo_idx)
         self._move_castillo_pieces()
         new_scores+=self._score_all_regions()
         self._set_rewards(new_scores)
@@ -1182,7 +1270,7 @@ class ElGrandeGameState(pyspiel.State):
             self._update_players_after_action()
 
     def _update_players_after_power(self):
-        powcards = {i:self._pcard_state[i] for i in range(_NUM_POWER_CARDS) if self._pcard_state[i]>0} 
+        powcards = {i:self._pcard_state[i] for i in range(self._game._num_power_cards) if self._pcard_state[i]>0} 
         order=[]
         keys = sorted(powcards.keys(),reverse=True)
         for i in keys:
@@ -1190,11 +1278,12 @@ class ElGrandeGameState(pyspiel.State):
             order = order + [player_id]
         self._cur_player=order[0]
         self._playersleft=order
+        self._playersdone=[]
         self._turn_state[_ST_TN_PHASE]=self._get_phaseid('action')
         
     def _update_players_after_action(self):
         #get everything ready for next round
-        powcards = {i:self._pcard_state[i] for i in range(_NUM_POWER_CARDS) if self._pcard_state[i]>0} 
+        powcards = {i:self._pcard_state[i] for i in range(self._game._num_power_cards) if self._pcard_state[i]>0} 
         lowest = sorted(powcards.keys())[0]
         start_player = int(np.log2(powcards[lowest]))
         self._cur_player = start_player
@@ -1202,13 +1291,14 @@ class ElGrandeGameState(pyspiel.State):
         for i in range(1,self._num_players):
             order = order +[(start_player+i) % self._num_players]
         self._playersleft = order
+        self._playersdone = []
         self._turn_state[_ST_TN_PHASE]=_ST_PHASE_POWER
         self._turn_state[_ST_TN_ROUND]+=1
-        self._pcard_state = np.full(_NUM_POWER_CARDS,0)
+        self._pcard_state = np.full(self._game._num_power_cards,0)
         #self._dealing = True #next state will be "chance" and we will deal cards
         #make the right cards dealt
         round = self._turn_state[_ST_TN_ROUND]
-        for i in range(_NUM_ACTION_CARDS):
+        for i in range(self._game._num_action_cards):
             if self._acard_round[i]==round:
                 self._acard_state[i] = _ST_AC_DEALT
             elif self._acard_round[i]==(round-1):
@@ -1226,19 +1316,19 @@ class ElGrandeGameState(pyspiel.State):
 
     def castillo_game_string(self,player=-1):
         #translate game state into CastilloGame format, for running tiny sims
-        state_vals={"players":self._num_players,"rewards":self._rewards,"king":self._king_region()+1}
+        state_vals={"players":self._num_players,"rewards":self._points,"king":self._king_region()+1}
         #put player state into castillo game state in order, starting from current player
         #region 0 is the castillo
-        board=np.full(self._num_players*_NUM_EXT_REGIONS,0)
+        board=np.full(self._num_players*self._game._num_ext_regions,0)
         grandes=np.full(self._num_players,0)
         scores=np.full(self._num_players,0)
         new_idxs=self.scoring_order(player)
         for p in new_idxs:
             idx=new_idxs[p]
-            for r in range(_NUM_REGIONS):
+            for r in range(self._game._num_regions):
                 board[(r+1)*self._num_players+idx] = self._board_state[r,p]    
             #castillo
-            board[idx] = self._board_state[pieces._CASTILLO,p]
+            board[idx] = self._board_state[self._game._castillo_idx,p]
             grandes[idx] = self._grande_region(p)+1
             scores[idx] = self._current_score()[p]
         state_vals["board"]="".join([chr(ord('A')+b) for b in board])
@@ -1278,7 +1368,7 @@ class ElGrandeGameState(pyspiel.State):
                 cards = self._available_powers()
                 actions = actions + [c+_ACT_POWERS for c in cards]
             elif self._turn_state[_ST_TN_PHASE]==_ST_PHASE_ACTION:
-                cards = [c for c in range(_NUM_ACTION_CARDS) if self._acard_state[c]==_ST_AC_DEALT]
+                cards = [c for c in range(self._game._num_action_cards) if self._acard_state[c]==_ST_AC_DEALT]
                 actions = actions + [c +_ACT_CARDS for c in cards]
             elif self._turn_state[_ST_TN_PHASE]==_ST_PHASE_CHOOSE:
                 actions.append(_ACT_DECIDE_CAB)
@@ -1296,7 +1386,7 @@ class ElGrandeGameState(pyspiel.State):
                 actions = self._get_region_actions_for_rsp_condition()
             else:
                 #must be score - choose a secret region (not one with the King)
-                actions = actions + [(i + _ACT_CHOOSE_SECRETS) for i in range (_NUM_REGIONS) if not self._region_has_king(i)]
+                actions = actions + [(i + _ACT_CHOOSE_SECRETS) for i in range (self._game._num_regions) if not self._region_has_king(i)]
             
             return actions
     
@@ -1346,13 +1436,13 @@ class ElGrandeGameState(pyspiel.State):
         #if self._dealing:
         #    self._deal_cards_from_action(action)
         #el
-        if action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
+        if action>=_ACT_CARDS and action < _ACT_CARDS + self._game._num_action_cards:
             self._acard_state[action - _ACT_CARDS] = _ST_AC_CHOSEN
             self._turn_state[_ST_TN_PHASE] = _ST_PHASE_CHOOSE
-        elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWER_CARDS:
+        elif action >= _ACT_POWERS and action < _ACT_POWERS + self._game._num_power_cards:
             self._assign_power(action - _ACT_POWERS)
             self._after_power_choice() #find next player to pick power card, or move on one phase
-        elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + _NUM_POWER_CARDS:
+        elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + self._game._num_power_cards:
             self._retrieve_power(action - _ACT_RETRIEVE_POWERS) #one-step action always
             self._after_action_step() #check if we need to move to next player, or next step, or keep playing actions
         elif action == _ACT_DECIDE_CAB:
@@ -1364,7 +1454,7 @@ class ElGrandeGameState(pyspiel.State):
                 self._turn_state[_ST_TN_PHASE]=_ST_PHASE_CARD1
                 self._pack_court()
             self._setup_action(1 if action==_ACT_DECIDE_ACT_ALT else 0)
-        elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + _NUM_CAB_AREAS:
+        elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + self._game._num_cab_areas:
             selRegion = (action - _ACT_CHOOSE_SECRETS)
             self._set_secret_region(selRegion)
             if self._turn_state[_ST_TN_PHASE]==_ST_PHASE_SCORE:
@@ -1376,8 +1466,7 @@ class ElGrandeGameState(pyspiel.State):
             elif self._turn_state[_ST_TN_PHASE]==_ST_PHASE_RESPONSE:
                 if self._rsp_steps[0]['do']=='toprovince':
                     #send one of your cabs to the province
-                    self._board_state[selRegion,self._cur_player]-=1
-                    self._board_state[pieces._PROVINCE,self._cur_player]+=1
+                    self._quickmove_cabs(selRegion,self._game._province_idx,1)
                 else:
                     #setting secret region - already done
                     pass
@@ -1388,15 +1477,15 @@ class ElGrandeGameState(pyspiel.State):
                 #if we weren't chosing for cab movement in scoring, we were choosing for a card action
                 self._apply_secret_choice(action)
                 self._after_action_step() 
-        elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + _NUM_REGIONS:
+        elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + self._game._num_regions:
             self._move_grande(action - _ACT_MOVE_GRANDES) #1-step action always
             self._after_action_step() 
-        elif action >= _ACT_MOVE_KINGS and action < _ACT_MOVE_KINGS + _NUM_REGIONS:
+        elif action >= _ACT_MOVE_KINGS and action < _ACT_MOVE_KINGS + self._game._num_regions:
             self._move_king(action - _ACT_MOVE_KINGS) #1-step action always
             self._after_action_step() 
-        elif action >= _ACT_MOVE_SCOREBOARDS and action < _ACT_MOVE_SCOREBOARDS + (_NUM_SCOREBOARDS*_NUM_REGIONS):
-            board = (action - _ACT_MOVE_SCOREBOARDS)//_NUM_REGIONS
-            region = (action - _ACT_MOVE_SCOREBOARDS)%_NUM_REGIONS
+        elif action >= _ACT_MOVE_SCOREBOARDS and action < _ACT_MOVE_SCOREBOARDS + (self._game._num_scoreboards*self._game._num_regions):
+            board = (action - _ACT_MOVE_SCOREBOARDS)//self._game._num_regions
+            region = (action - _ACT_MOVE_SCOREBOARDS)%self._game._num_regions
             self._move_scoreboard(board,region)
             self._after_action_step() 
         elif action == _ACT_TRIGGER:
@@ -1414,8 +1503,8 @@ class ElGrandeGameState(pyspiel.State):
             self._after_action_step()
         else:
             #moving a caballero fromregion, toregion, ofplayer
-            fromRegion = (action- _ACT_CAB_MOVES)//(_NUM_CAB_AREAS * _MAX_PLAYERS)
-            toRegion = ((action- _ACT_CAB_MOVES)%(_NUM_CAB_AREAS * _MAX_PLAYERS))//_MAX_PLAYERS
+            fromRegion = (action- _ACT_CAB_MOVES)//(self._game._num_cab_areas * _MAX_PLAYERS)
+            toRegion = ((action- _ACT_CAB_MOVES)%(self._game._num_cab_areas * _MAX_PLAYERS))//_MAX_PLAYERS
             ofPlayer = (action- _ACT_CAB_MOVES)%_MAX_PLAYERS
             self._move_one_cab(fromRegion, toRegion, ofPlayer)        
             self._after_action_step() 
@@ -1429,12 +1518,12 @@ class ElGrandeGameState(pyspiel.State):
         #if self._dealing:
         #    actionString = "Deal " + "|".join([pieces._CARDS[c]['name'] for c in self._cards_for_action(action)])
         #el
-        if action>=_ACT_CARDS and action < _ACT_CARDS + _NUM_ACTION_CARDS:
-            cardname = pieces._CARDS[pieces._CARDTRACK[action-_ACT_CARDS]]['name']
+        if action>=_ACT_CARDS and action < _ACT_CARDS + self._game._num_action_cards:
+            cardname = self._game._cardtrack[action-_ACT_CARDS]
             actionString = "Action "+cardname
-        elif action >= _ACT_POWERS and action < _ACT_POWERS + _NUM_POWER_CARDS:
+        elif action >= _ACT_POWERS and action < _ACT_POWERS + self._game._num_power_cards:
             actionString = "Power "+str(action + 1 - _ACT_POWERS)
-        elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + _NUM_POWER_CARDS:
+        elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + self._game._num_power_cards:
             actionString = "Retrieve Power "+str(action + 1 - _ACT_RETRIEVE_POWERS)
         elif action == _ACT_DECIDE_CAB:
             actionString = "Caballero placement before card action"
@@ -1442,26 +1531,26 @@ class ElGrandeGameState(pyspiel.State):
             actionString = "Card action before caballero placement"
         elif action == _ACT_DECIDE_ACT_ALT:
             actionString = "Card action (2nd choice) before caballero placement"
-        elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + _NUM_CAB_AREAS:
-            actionString = "Choose "+ pieces._REGIONS[action - _ACT_CHOOSE_SECRETS]
-        elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + _NUM_REGIONS:
-            actionString = "Grande to "+ pieces._REGIONS[action - _ACT_MOVE_GRANDES]
-        elif action >= _ACT_MOVE_KINGS and action < _ACT_MOVE_KINGS + _NUM_REGIONS:
-            actionString = "King to "+ pieces._REGIONS[action - _ACT_MOVE_KINGS]
-        elif action >= _ACT_MOVE_SCOREBOARDS and action < _ACT_MOVE_SCOREBOARDS + (_NUM_SCOREBOARDS*_NUM_REGIONS):
-            board = (action - _ACT_MOVE_SCOREBOARDS)//_NUM_REGIONS
-            region = (action - _ACT_MOVE_SCOREBOARDS)%_NUM_REGIONS
-            actionString = "Move scoreboard "+ str(self._scoreboards[board]['points']) +" to " + pieces._REGIONS[region]   
+        elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + self._game._num_cab_areas:
+            actionString = "Choose "+ self._game._regions[action - _ACT_CHOOSE_SECRETS]
+        elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + self._game._num_regions:
+            actionString = "Grande to "+ self._game._regions[action - _ACT_MOVE_GRANDES]
+        elif action >= _ACT_MOVE_KINGS and action < _ACT_MOVE_KINGS + self._game._num_regions:
+            actionString = "King to "+ self._game._regions[action - _ACT_MOVE_KINGS]
+        elif action >= _ACT_MOVE_SCOREBOARDS and action < _ACT_MOVE_SCOREBOARDS + (self._game._num_scoreboards*self._game._num_regions):
+            board = (action - _ACT_MOVE_SCOREBOARDS)//self._game._num_regions
+            region = (action - _ACT_MOVE_SCOREBOARDS)%self._game._num_regions
+            actionString = "Move scoreboard "+ str(self._scoreboards[board]['points']) +" to " + self._game._regions[region]   
         elif action == _ACT_SKIP:
             actionString = "Skip this step"
         elif action == _ACT_TRIGGER:
             actionString = "Trigger card action"
         else:
             #moving a caballero fromregion, toregion, ofplayer
-            fromRegion = (action- _ACT_CAB_MOVES)//(_NUM_CAB_AREAS * _MAX_PLAYERS)
-            toRegion = ((action- _ACT_CAB_MOVES)%(_NUM_CAB_AREAS * _MAX_PLAYERS))//_MAX_PLAYERS
+            fromRegion = (action- _ACT_CAB_MOVES)//(self._game._num_cab_areas * _MAX_PLAYERS)
+            toRegion = ((action- _ACT_CAB_MOVES)%(self._game._num_cab_areas * _MAX_PLAYERS))//_MAX_PLAYERS
             ofPlayer = (action- _ACT_CAB_MOVES)%_MAX_PLAYERS
-            actionString = self._players[ofPlayer] + " caballero from " + pieces._REGIONS[fromRegion] + " to " + pieces._REGIONS[toRegion]        
+            actionString = self._players[ofPlayer] + " caballero from " + self._game._regions[fromRegion] + " to " + self._game._regions[toRegion]        
        
         if withPlayer: 
             return "{} ({})".format(self._players[player],actionString)
@@ -1531,7 +1620,7 @@ class ElGrandeGameState(pyspiel.State):
         #                        - power cards by player
         #                        - action cards by deck, replacing name with playerID if played
         lines = ["REGIONS"]
-        for i in range(_NUM_CAB_AREAS):
+        for i in range(self._game._num_cab_areas):
             lines = lines + [self._region_str(i)]
         lines = lines + ["","POWER CARDS"]
         for i in range(self._num_players):
@@ -1559,7 +1648,7 @@ class ElGrandeGameState(pyspiel.State):
         my_copy._players = self._players.copy()
         my_copy._playersdone = self._playersdone.copy()
         my_copy._playersleft = self._playersleft.copy()
-        my_copy._rewards = self._rewards.copy()
+        my_copy._points = self._points.copy()
         my_copy._scoreboards = self._scoreboards.copy()
         my_copy._turn_state = self._turn_state.copy()
         my_copy._win_points = self._win_points.copy()
@@ -1573,12 +1662,17 @@ class ElGrandeGame(pyspiel.Game):
     """El Grande Game
     """
 
-    def __init__(self,params={"players":_DEFAULT_PLAYERS,"game_state":'',"game_state_json":''}):
+    def __init__(self,params={"players":_DEFAULT_PLAYERS,"game_state":'',"game_state_json":'',"config_file":_DEFAULT_CONFIG}):
         couchip = '127.0.0.1:5984'
         credentials = 'admin:elderberry'
         couch = couchdb.Server('http://'+credentials+'@'+couchip)
         super().__init__(_GAME_TYPE, _GAME_INFO, params)
         _games.append(self)
+
+        self._config_file = _DEFAULT_CONFIG
+        if params.get("config_file",None) is not None:
+            self._config_file=params["config_file"]
+        self._init_game_config()
 
         self._num_players=4
         if params.get("players",None) is not None:
@@ -1600,6 +1694,36 @@ class ElGrandeGame(pyspiel.Game):
         else:
             gamehistdb = couch['game_history']
             self._game_state = gamehistdb[game_state]
+
+    def _init_game_config(self):
+        #read in configuration information from file
+        with open(self._config_file) as f:
+            self._config_data=json.load(f)
+        #express simply for ease of use calculating game states
+        self._num_regions = len(self._config_data['regions'])
+        self._castillo_idx = self._num_regions
+        self._court_idx = self._num_regions+1
+        self._province_idx = self._num_regions+2
+        self._regions=self._config_data['regions']+[self._config_data['castillo'],self._config_data['court'],self._config_data['province']]
+        self._region_ids = {self._config_data['regions'][i]:i for i in range(self._num_regions)}
+        self._region_ids[self._config_data['castillo']]=self._castillo_idx
+        self._region_ids[self._config_data['court']]=self._court_idx
+        self._region_ids[self._config_data['province']]=self._province_idx
+
+        self._num_ext_regions = self._num_regions+1
+        self._num_cab_areas = self._num_ext_regions+2
+        self._decks = self._config_data['decks']
+        self._num_decks = len(self._config_data['decks'])
+        self._deck_names = self._config_data['decks'].keys()
+        self._cardtrack = [card for deck in self._decks for card in self._decks[deck]]
+        self._num_action_cards = len(self._cardtrack)
+        self._cards = self._config_data['cards']
+        self._neighbors = {self._region_ids[r]:[self._region_ids[n] for n in self._config_data['neighbors'][r]] for r in self._config_data['regions']}
+        self._points = {self._region_ids[r]:self._config_data['points'][r] for r in self._config_data['points']}
+        self._scoreboards = [{'name':s,'points':self._config_data['scoreboards'][s]} for s in self._config_data['scoreboards']]
+        self._power_cabs=[6,5,5,4,4,3,3,2,2,1,1,0,0] #won't allow this to vary at the moment
+        self._num_power_cards = len(self._power_cabs)
+        self._num_scoreboards = len(self._scoreboards)
 
     def new_initial_state(self):
         return ElGrandeGameState(self)
@@ -1663,14 +1787,14 @@ class ElGrandeGameObserver:
     _PHASES=[[0,0,0],[0,0,0],[0,0,1],[0,1,0],[0,1,1],[1,0,0],[1,0,1],[1,1,0],[1,1,1],[1,1,1]]
 
     def __init__(self):
-        board_size=(_ST_IDCH*_ST_BDX_PROVINCE*_MAX_PLAYERS)
-        gk_size=(_NUM_REGIONS*(_MAX_PLAYERS+1))
-        cards_size=(_NUM_ACTION_CARDS*2)
+        board_size=(_ST_IDCH*_MAX_CAB_AREAS*_MAX_PLAYERS)
+        gk_size=(_MAX_REGIONS*(_MAX_PLAYERS+1))
+        cards_size=(_MAX_ACTION_CARDS*2)
         phase_size=3
 
         self.tensor = np.zeros(board_size + gk_size + cards_size + phase_size, np.float32)
-        self._board = self.tensor[:board_size].reshape(_ST_IDCH, _ST_BDX_PROVINCE, _MAX_PLAYERS)
-        self._gk = self.tensor[board_size:(board_size+gk_size)].reshape(_NUM_REGIONS,_MAX_PLAYERS+1)
+        self._board = self.tensor[:board_size].reshape(_ST_IDCH, _MAX_CAB_AREAS, _MAX_PLAYERS)
+        self._gk = self.tensor[board_size:(board_size+gk_size)].reshape(_MAX_REGIONS,_MAX_PLAYERS+1)
         self._cards = self.tensor[(board_size+gk_size):(board_size+gk_size+cards_size)]
         self._phase = self.tensor[(board_size+gk_size+cards_size):]
         self.dict = {"board": self._board,"grande_king":self._gk,"cards":self._cards,"phase":self._phase}
@@ -1680,17 +1804,17 @@ class ElGrandeGameObserver:
     def set_from(self, state, player):
         del player
         for channel in range(_ST_IDCH):
-            chmat = (state._board_state[:_ST_BDX_PROVINCE,:_MAX_PLAYERS] >> channel)%2
+            chmat = (state._board_state[:_MAX_CAB_AREAS,:_MAX_PLAYERS] >> channel)%2
             self._board[channel,:,:]=chmat
 
         for channel in range(_MAX_PLAYERS+1):
-            chvec = (state._board_state[:_ST_BDX_CASTILLO,_ST_BDY_GRANDE_KING] >> channel)%2
+            chvec = (state._board_state[:_MAX_REGIONS,_ST_BDY_GRANDE_KING] >> channel)%2
             self._gk[:,channel]=chvec
 
-        cards_ud_cd = [state._acard_state[s] in [_ST_AC_CHOSEN,_ST_AC_DONE] for s in range(_NUM_ACTION_CARDS)]
-        cards_uc_dd = [state._acard_state[s] in [_ST_AC_DEALT,_ST_AC_DONE] for s in range(_NUM_ACTION_CARDS)]
-        self._cards[:_NUM_ACTION_CARDS]=cards_ud_cd
-        self._cards[_NUM_ACTION_CARDS:]=cards_uc_dd
+        cards_ud_cd = [state._acard_state[s] in [_ST_AC_CHOSEN,_ST_AC_DONE] for s in range(state._game._num_action_cards)]
+        cards_uc_dd = [state._acard_state[s] in [_ST_AC_DEALT,_ST_AC_DONE] for s in range(state._game._num_action_cards)]
+        self._cards[:state._game._num_action_cards]=cards_ud_cd
+        self._cards[state._game._num_action_cards:]=cards_uc_dd
 
         self._phase[:]=self._PHASES[state._turn_state[_ST_TN_PHASE]]
 
