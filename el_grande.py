@@ -1683,9 +1683,6 @@ class ElGrandeGame(pyspiel.Game):
     """
 
     def __init__(self,params={"players":_DEFAULT_PLAYERS,"game_state":'',"game_state_json":'',"config_file":_DEFAULT_CONFIG}):
-        couchip = '127.0.0.1:5984'
-        credentials = 'admin:elderberry'
-        couch = couchdb.Server('http://'+credentials+'@'+couchip)
         super().__init__(_GAME_TYPE, _GAME_INFO, params)
         _games.append(self)
 
@@ -1693,6 +1690,7 @@ class ElGrandeGame(pyspiel.Game):
         if params.get("config_file",None) is not None:
             self._config_file=params["config_file"]
         self._init_game_config()
+
 
         self._num_players=4
         if params.get("players",None) is not None:
@@ -1712,6 +1710,7 @@ class ElGrandeGame(pyspiel.Game):
             #parameter is actually a string - convert to json doc for compatibility
             self._game_state = json.loads(game_state_json)
         else:
+            couch = couchdb.Server('http://'+self._couchcred+'@'+self._couchip)
             gamehistdb = couch['game_history']
             self._game_state = gamehistdb[game_state]
 
@@ -1719,7 +1718,10 @@ class ElGrandeGame(pyspiel.Game):
         #read in configuration information from file
         with open(self._config_file) as f:
             self._config_data=json.load(f)
-        #express simply for ease of use calculating game states
+	#couch defaults to localhost, or is settable from config
+        self._couchip = self._config_data.get('couchip','127.0.0.1:5984')
+        self._couchcred = self._config_data.get('couchcred','admin:elderberry') 
+        #express game info simply for ease of use calculating game states
         self._num_regions = len(self._config_data['regions'])
         self._castillo_idx = self._num_regions
         self._court_idx = self._num_regions+1
