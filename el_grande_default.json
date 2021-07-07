@@ -82,5 +82,5 @@
             "Deck4_Grande_2": {"actiontype": "grande","text": "Grande: You may move your Grande.","explain":"Useful for maximising value of uncontested regions where player is dominant"},
             "Deck4_Special": {"actiontype": "uniquescore","text": "Special Scoring: Each player chooses a region with their secret disc. Each region chosen exactly once is immediately scored. Regions not chosen or chosen more than once are not scored."},
             "Deck4_Advisor": {"actiontype": "king", "details": {"condition": "neighbor"},"text": "Royal Advisor: You may move the {0} to an adjacent region.","textparams":["king"]},
-            "Deck5_King": {"actiontype": "king", "details": {"condition": "all"},"text": "King's Card: You may move the {0} to any region.","textparams":["king"]}}
+            "Deck5_King": {"actiontype": "king", "details": {"condition": "all"},"text": "King Card: You may move the {0} to any region.","textparams":["king"]}}
 }
