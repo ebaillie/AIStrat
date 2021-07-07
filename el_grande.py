@@ -7,7 +7,7 @@ import random
 import couchdb
 import pyspiel
 
-_DEFAULT_CONFIG = "el_grande_default.json" #source of config json if nothing specified on load - file in same directory as .py file
+_DEFAULT_CONFIG = "el_grande_default" #source of config json if nothing specified on load - file in same directory as .py file
 _MAX_PLAYERS = 5
 _DEFAULT_PLAYERS = 2
 _MAX_REGIONS = 12 # slightly arbitrary - disallow games with "too many" regions
@@ -163,6 +163,12 @@ class ElGrandeGameState(pyspiel.State):
     def _get_cid(self,cardName):
         return self._game._cardtrack.index(cardName)
 
+    def _card_info(self,cid):
+        cname=self._game._cardtrack[cid]
+        cdata=self._game._cards[cname]
+        paramtext=[self._game._config_data['units'].get(u,u) for u in cdata.get('textparams',[])]
+        return {"name":cname,"deck":cname[:5],"text":cdata['text'].format(*tuple(paramtext))}
+
     def _get_phaseid(self,phaseName):
         return _PHASE_NAMES.index(phaseName)
 
@@ -259,6 +265,8 @@ class ElGrandeGameState(pyspiel.State):
        
     def _card_moves(self):
         # return 0==instant,1=1-step,2=2 or more
+        courtstr=self._game._config_data['court']
+        provincestr=self._game._config_data['court']
         card = self._get_current_card()
         if card['actiontype']=='move':
             fromreg=card['details']['from']['region']
@@ -266,7 +274,7 @@ class ElGrandeGameState(pyspiel.State):
             if fromreg=='ownerchooseplus':
                 #Angry King
                 return _ST_STEPS_0
-            if fromreg in ['court','province'] and toreg in ['court','province']:
+            if fromreg in [courtstr,provincestr] and toreg in [courtstr,provincestr]:
                 #Decay, Decayall, Court
                 return _ST_STEPS_0 
             if fromreg=='ownerchoose' or toreg=='ownerchoose':
@@ -344,8 +352,9 @@ class ElGrandeGameState(pyspiel.State):
             self._state_add_tts_turn_info(jsonData['turninfo'])
         else:
             #native python version - compatible with current export
-            self._state_add_card_info(jsonData['cardinfo'])
+            self._state_add_card_info(jsonData['cardinfo'],jsonData['turninfo']['round'])
             self._state_add_turn_info(jsonData['turninfo'])
+            self._state_add_point_info(jsonData['pointinfo'])
 
     def _json_for_game_state(self):
         jsonData={}
@@ -354,6 +363,9 @@ class ElGrandeGameState(pyspiel.State):
         jsonData['pieces']=self._json_for_pieces()
         jsonData['cardinfo']=self._json_for_card_info()
         jsonData['turninfo']=self._json_for_turn_info()
+        jsonData['pointinfo']=self._json_for_point_info()
+        jsonData['config']=self._game._config_file
+        jsonData['legalactions']=self._json_for_legal_actions()
         return jsonData
  
     def _state_add_players(self, playerData):
@@ -400,9 +412,12 @@ class ElGrandeGameState(pyspiel.State):
             jsonData[self._players[p]]=pieceData
         return jsonData
 
-    def _state_add_card_info(self,jsonData):
-        self._acard_state = np.array([_ACT_CARD_IDS[a] for a in jsonData['action_cards']])
+    def _state_add_card_info(self,jsonData,thisRound):
+        #self._acard_state = np.array([_ACT_CARD_IDS[a] for a in jsonData['action_cards']])
         self._acard_round = np.array(jsonData['round_cards'])
+        self._acard_state = np.array([_ST_AC_UNPLAYED if self._acard_round[r]>thisRound else _ST_AC_DONE for r in range(len(self._acard_round))])
+        for c in jsonData['action_cards']:
+            self._acard_state[int(c)]=_ACT_CARD_IDS[jsonData['action_cards'][c]['state']]
         self._pcard_state = np.full(self._game._num_power_cards,0)
         self._past_pcard_state = np.full(self._game._num_power_cards,0)
         for pl in jsonData['power_cards']:
@@ -414,7 +429,7 @@ class ElGrandeGameState(pyspiel.State):
     def _json_for_card_info(self):
         #represent card states as strings, round info as int round numbers
         jsonData={}
-        jsonData['action_cards']=[_ACT_CARD_STATES[a] for a in self._acard_state]
+        jsonData['action_cards']={str(r):{"state":_ACT_CARD_STATES[self._acard_state[r]],"text":self._card_info(r)["text"],"deck":self._card_info(r)["deck"]} for r in range(len(self._acard_state)) if self._acard_round[r]==self._get_round()}
         jsonData['round_cards']=self._acard_round.tolist()
         jsonData['power_cards']={}
         jsonData['past_power']={}
@@ -519,6 +534,17 @@ class ElGrandeGameState(pyspiel.State):
         jsonData['moveinfo']=self._movement_tracking
         if self._turn_state[_ST_TN_PHASE]==_ST_PHASE_RESPONSE:
             jsonData['rspinfo']={"player":self._rsp_player,"phase":_PHASE_NAMES[self._rsp_phase],"steps":self._rsp_steps,"finalize":self._rsp_finalize}
+        return jsonData
+
+    def _state_add_point_info(self,data):
+        self._points = {self._get_rid(r):data[r] for r in data}
+
+    def _json_for_point_info(self):
+        jsonData={self._game._regions[r]:self._points[r] for r in range(len(self._points))}
+        return jsonData
+
+    def _json_for_legal_actions(self):
+        jsonData={str(a):self.action_to_string(a) for a in self.legal_actions()}
         return jsonData
 
     def _state_add_tts_turn_info(self,data):
@@ -937,8 +963,10 @@ class ElGrandeGameState(pyspiel.State):
 
         self._movement_tracking['player']=self._cur_player
         for v in ['from','to']:
-            if card_details[v]['region'] in ['court','province']:
-                self._movement_tracking[v]=[self._get_rid(card_details[v]['region'])]
+            if card_details[v]['region'] =='court':
+                self._movement_tracking[v]=[self._game._court_idx]
+            elif card_details[v]['region'] =='province':
+                self._movement_tracking[v]=[self._game._province_idx]
             elif card_details[v]['region']=='selfchoose':
                 #current King's region shouldn't be in the list
                 the_regions=[i for i in range(self._game._num_regions) if not self._region_has_king(i)]
@@ -1545,17 +1573,17 @@ class ElGrandeGameState(pyspiel.State):
         elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + self._game._num_power_cards:
             actionString = "Retrieve Power "+str(action + 1 - _ACT_RETRIEVE_POWERS)
         elif action == _ACT_DECIDE_CAB:
-            actionString = "Caballero placement before card action"
+            actionString = "{0} placement before card action".format(self._game._config_data['units']['caballero'])
         elif action == _ACT_DECIDE_ACT:
-            actionString = "Card action before caballero placement"
+            actionString = "Card action before {0} placement".format(self._game._config_data['units']['caballero'])
         elif action == _ACT_DECIDE_ACT_ALT:
-            actionString = "Card action (2nd choice) before caballero placement"
+            actionString = "Card action (2nd choice) before {0} placement".format(self._game._config_data['units']['caballero'])
         elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + self._game._num_cab_areas:
             actionString = "Choose "+ self._game._regions[action - _ACT_CHOOSE_SECRETS]
         elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + self._game._num_regions:
-            actionString = "Grande to "+ self._game._regions[action - _ACT_MOVE_GRANDES]
+            actionString = "{0} to {1}".format(self._game._config_data['units']['grande'],self._game._regions[action - _ACT_MOVE_GRANDES])
         elif action >= _ACT_MOVE_KINGS and action < _ACT_MOVE_KINGS + self._game._num_regions:
-            actionString = "King to "+ self._game._regions[action - _ACT_MOVE_KINGS]
+            actionString = "{0} to {1}".format(self._game._config_data['units']['king'],self._game._regions[action - _ACT_MOVE_KINGS])
         elif action >= _ACT_MOVE_SCOREBOARDS and action < _ACT_MOVE_SCOREBOARDS + (self._game._num_scoreboards*self._game._num_regions):
             board = (action - _ACT_MOVE_SCOREBOARDS)//self._game._num_regions
             region = (action - _ACT_MOVE_SCOREBOARDS)%self._game._num_regions
@@ -1569,7 +1597,7 @@ class ElGrandeGameState(pyspiel.State):
             fromRegion = (action- _ACT_CAB_MOVES)//(self._game._num_cab_areas * _MAX_PLAYERS)
             toRegion = ((action- _ACT_CAB_MOVES)%(self._game._num_cab_areas * _MAX_PLAYERS))//_MAX_PLAYERS
             ofPlayer = (action- _ACT_CAB_MOVES)%_MAX_PLAYERS
-            actionString = self._players[ofPlayer] + " caballero from " + self._game._regions[fromRegion] + " to " + self._game._regions[toRegion]        
+            actionString = "{0} {1} from {2} to {3}".format(self._players[ofPlayer],self._game._config_data['units']['caballero'],self._game._regions[fromRegion],self._game._regions[toRegion] )       
        
         if withPlayer: 
             return "{} ({})".format(self._players[player],actionString)
@@ -1687,12 +1715,12 @@ class ElGrandeGame(pyspiel.Game):
         _games.append(self)
 
         self._config_file = _DEFAULT_CONFIG
+        self._num_players=4
+
+
         if params.get("config_file",None) is not None:
             self._config_file=params["config_file"]
-        self._init_game_config()
-
-
-        self._num_players=4
+        
         if params.get("players",None) is not None:
             self._num_players=params["players"]
         game_state=''
@@ -1703,20 +1731,26 @@ class ElGrandeGame(pyspiel.Game):
         if params.get("game_state_json",None) is not None:
             game_state_json=params["game_state_json"]
 
-        #there is no need for _state and _state_json to both be given as parameters - if they are, use _state_json
+        #there is no need for _state and _state_json to both be given as parameters - if they are, use _state_json.
+        #config_file is read from game state by preference, else from parameter, else use default
         if game_state == '' and game_state_json == '':
             self._game_state=''
         elif game_state_json != '':
             #parameter is actually a string - convert to json doc for compatibility
             self._game_state = json.loads(game_state_json)
+            self._config_file = self._game_state.get('config',_DEFAULT_CONFIG)
         else:
             couch = couchdb.Server('http://'+self._couchcred+'@'+self._couchip)
             gamehistdb = couch['game_history']
             self._game_state = gamehistdb[game_state]
+            self._config_file = self._game_state.get('config',_DEFAULT_CONFIG)
+            
+        self._init_game_config()
 
     def _init_game_config(self):
         #read in configuration information from file
-        with open(self._config_file) as f:
+        cfilename=self._config_file + ".json"
+        with open(cfilename) as f:
             self._config_data=json.load(f)
 	#couch defaults to localhost, or is settable from config
         self._couchip = self._config_data.get('couchip','127.0.0.1:5984')
