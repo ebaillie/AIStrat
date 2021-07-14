@@ -1754,7 +1754,7 @@ class ElGrandeGame(pyspiel.Game):
             self._config_data=json.load(f)
 	#couch defaults to localhost, or is settable from config
         self._couchip = self._config_data.get('couchip','127.0.0.1:5984')
-        self._couchcred = self._config_data.get('couchcred','admin:elderberry') 
+        self._couchcred = self._config_data.get('couchcred','user:pass') 
         #express game info simply for ease of use calculating game states
         self._num_regions = len(self._config_data['regions'])
         self._castillo_idx = self._num_regions
