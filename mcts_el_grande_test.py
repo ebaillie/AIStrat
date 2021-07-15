@@ -14,8 +14,6 @@ from absl import flags
 import numpy as np
 import el_grande
 #import simple_grande
-import couchdb
-
 from open_spiel.python.algorithms import mcts
 from open_spiel.python.algorithms.alpha_zero import evaluator as az_evaluator
 from open_spiel.python.algorithms.alpha_zero import model as az_model
@@ -23,18 +21,6 @@ from open_spiel.python.bots import gtp
 from open_spiel.python.bots import human
 from open_spiel.python.bots import uniform_random
 import pyspiel
-
-gamedocid='d16e7ab43670c7656101aa0a30098186'
-gamehistid='d16e7ab43670c7656101aa0a30098ceb'
-
-couchip = '127.0.0.1:5984'
-credentials = 'user:pass'
-couch = couchdb.Server('http://'+credentials+'@'+couchip)
-gamedb = couch['game']
-gamehistdb = couch['game_history']
-
-
-
 
 
 _KNOWN_PLAYERS = [
@@ -146,12 +132,7 @@ def _play_game(game, bots, initial_actions):
   """Plays one game."""
   state = game.new_initial_state()
   if FLAGS.game =="el_grande":
-    #state._load_game_info(gamedb[gamedocid])
-    #state._load_game_state(gamehistdb[gamehistid])
     state._end_turn = FLAGS.end_turn
-#  elif FLAGS.game =="simple_grande":
-#    state._load_game_info(gamedb[gamedocid])
-#    state._load_game_state(gamehistdb[gamehistid])
   _opt_print("Initial state:\n{}".format(state))
 
   history = []
