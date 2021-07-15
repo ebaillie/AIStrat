@@ -28,7 +28,7 @@ gamedocid='d16e7ab43670c7656101aa0a30098186'
 gamehistid='d16e7ab43670c7656101aa0a30098ceb'
 
 couchip = '127.0.0.1:5984'
-credentials = 'admin:elderberry'
+credentials = 'user:pass'
 couch = couchdb.Server('http://'+credentials+'@'+couchip)
 gamedb = couch['game']
 gamehistdb = couch['game_history']
