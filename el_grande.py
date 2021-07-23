@@ -340,7 +340,7 @@ class ElGrandeGameState(pyspiel.State):
 
     #turn all relevant state info from DB format into game format
     def _load_game_state(self,jsonData):
-        self._history = []
+        self._history = jsonData.get('history',[])
         self._blank_board()
         self._state_add_players(jsonData['players'])
         self._state_add_king(jsonData['king'])
@@ -358,6 +358,7 @@ class ElGrandeGameState(pyspiel.State):
 
     def _json_for_game_state(self):
         jsonData={}
+        jsonData['history']=self._history.copy()
         jsonData['players']=self._json_for_players()
         jsonData['king']=self._json_for_king()
         jsonData['pieces']=self._json_for_pieces()
@@ -365,7 +366,6 @@ class ElGrandeGameState(pyspiel.State):
         jsonData['turninfo']=self._json_for_turn_info()
         jsonData['pointinfo']=self._json_for_point_info()
         jsonData['config']=self._game._config_file
-        jsonData['legalactions']=self._json_for_legal_actions()
         return jsonData
  
     def _state_add_players(self, playerData):
@@ -429,7 +429,13 @@ class ElGrandeGameState(pyspiel.State):
     def _json_for_card_info(self):
         #represent card states as strings, round info as int round numbers
         jsonData={}
-        jsonData['action_cards']={str(r):{"state":_ACT_CARD_STATES[self._acard_state[r]],"text":self._card_info(r)["text"],"deck":self._card_info(r)["deck"]} for r in range(len(self._acard_state)) if self._acard_round[r]==self._get_round()}
+        #make sure we always have the last card - "Deck5" - listed
+        numCards=len(self._acard_state)
+        jsonData['action_cards']={str(r):{"state":_ACT_CARD_STATES[self._acard_state[r]],
+            "text":self._card_info(r)["text"],
+            "deck":self._card_info(r)["deck"]} 
+            for r in range(numCards) if r==(numCards-1) or self._acard_round[r]==self._get_round()}
+         
         jsonData['round_cards']=self._acard_round.tolist()
         jsonData['power_cards']={}
         jsonData['past_power']={}
@@ -541,10 +547,6 @@ class ElGrandeGameState(pyspiel.State):
 
     def _json_for_point_info(self):
         jsonData={self._game._regions[r]:self._points[r] for r in range(len(self._points))}
-        return jsonData
-
-    def _json_for_legal_actions(self):
-        jsonData={str(a):self.action_to_string(a) for a in self.legal_actions()}
         return jsonData
 
     def _state_add_tts_turn_info(self,data):
@@ -1156,8 +1158,9 @@ class ElGrandeGameState(pyspiel.State):
                             else:
                                 players = [i for i in range(self._num_players) if ((i in players) or i!=mentioned_player)]
                 for player in players:
-                    if self._board_state[fromreg,player] >0:
+                    if self._board_state[fromreg,player] >0 and fromreg!=toreg:
                         #there is a caballero here of the correct colour, so this move action is okay
+                        #don't list moves from/to the same position
                         actions.append(_ACT_CAB_MOVES + player + _MAX_PLAYERS*(toreg + self._game._num_cab_areas*fromreg))
         
         #during a movement_tracking episode (eg, moving cabs around the board)
@@ -1487,6 +1490,8 @@ class ElGrandeGameState(pyspiel.State):
         if not action in self.legal_actions():
             return
 
+        #we're going to do this, so record it in the history
+        self._history.append(action)
         self._set_rewards(np.full(self._num_players,0))
         self._game_step+=1
 
@@ -1559,47 +1564,67 @@ class ElGrandeGameState(pyspiel.State):
             self._move_one_cab(fromRegion, toRegion, ofPlayer)        
             self._after_action_step() 
     
-    
     def action_to_string(self, arg0, arg1=None, withPlayer=True):
         """Action -> string. Args either (player, action) or (action)."""
         player = self.current_player() if arg1 is None else arg0
         action = arg0 if arg1 is None else arg1
+        return self._action_output(action,player,withPlayer,json=False)
+
+    def _action_output(self,action,player,withPlayer=False,json=False):
         actionString=""
+        jsondata=[]
         if action>=_ACT_CARDS and action < _ACT_CARDS + self._game._num_action_cards:
             cardname = self._game._cardtrack[action-_ACT_CARDS]
             actionString = "Action "+cardname
+            jsondata={"action":cardname,"deck":cardname[:5]}
         elif action >= _ACT_POWERS and action < _ACT_POWERS + self._game._num_power_cards:
             actionString = "Power "+str(action + 1 - _ACT_POWERS)
+            jsondata={"power":str(action + 1 - _ACT_POWERS)}
         elif action >= _ACT_RETRIEVE_POWERS and action < _ACT_RETRIEVE_POWERS + self._game._num_power_cards:
             actionString = "Retrieve Power "+str(action + 1 - _ACT_RETRIEVE_POWERS)
+            jsondata={"retpower":str(action + 1 - _ACT_RETRIEVE_POWERS)}
         elif action == _ACT_DECIDE_CAB:
             actionString = "{0} placement before card action".format(self._game._config_data['units']['caballero'])
+            jsondata={"decision":"cab"}
         elif action == _ACT_DECIDE_ACT:
             actionString = "Card action before {0} placement".format(self._game._config_data['units']['caballero'])
+            jsondata={"decision":"card"}
         elif action == _ACT_DECIDE_ACT_ALT:
             actionString = "Card action (2nd choice) before {0} placement".format(self._game._config_data['units']['caballero'])
+            jsondata={"decision":"card"}
         elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + self._game._num_cab_areas:
             actionString = "Choose "+ self._game._regions[action - _ACT_CHOOSE_SECRETS]
+            jsondata={"choose":self._game._regions[action - _ACT_CHOOSE_SECRETS]}
         elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + self._game._num_regions:
             actionString = "{0} to {1}".format(self._game._config_data['units']['grande'],self._game._regions[action - _ACT_MOVE_GRANDES])
+            jsondata={"grande":self._game._regions[action - _ACT_MOVE_GRANDES]}
         elif action >= _ACT_MOVE_KINGS and action < _ACT_MOVE_KINGS + self._game._num_regions:
             actionString = "{0} to {1}".format(self._game._config_data['units']['king'],self._game._regions[action - _ACT_MOVE_KINGS])
+            jsondata={"king":self._game._regions[action - _ACT_MOVE_KINGS]}
         elif action >= _ACT_MOVE_SCOREBOARDS and action < _ACT_MOVE_SCOREBOARDS + (self._game._num_scoreboards*self._game._num_regions):
             board = (action - _ACT_MOVE_SCOREBOARDS)//self._game._num_regions
             region = (action - _ACT_MOVE_SCOREBOARDS)%self._game._num_regions
             actionString = "Move scoreboard {0} to {1}".format(self._scoreboards[board]['points'],self._game._regions[region])   
+            jsondata={"board":self._scoreboards[board]['points'],"region":self._game._regions[region]}
         elif action == _ACT_SKIP:
             actionString = "Skip this step"
+            jsondata={"decision":"skip"}
         elif action == _ACT_TRIGGER:
             actionString = "Trigger card action"
+            jsondata={"decision":"trigger"}
         else:
             #moving a caballero fromregion, toregion, ofplayer
             fromRegion = (action- _ACT_CAB_MOVES)//(self._game._num_cab_areas * _MAX_PLAYERS)
             toRegion = ((action- _ACT_CAB_MOVES)%(self._game._num_cab_areas * _MAX_PLAYERS))//_MAX_PLAYERS
             ofPlayer = (action- _ACT_CAB_MOVES)%_MAX_PLAYERS
             actionString = "{0} {1} from {2} to {3}".format(self._players[ofPlayer],self._game._config_data['units']['caballero'],self._game._regions[fromRegion],self._game._regions[toRegion] )       
-       
-        if withPlayer: 
+            jsondata={"cabfrom":self._game._regions[fromRegion],"cabto":self._game._regions[toRegion],"ofplayer":self._players[ofPlayer]}
+ 
+
+        if json:
+            jsondata["player"]=self._players[player]
+            return jsondata
+        elif withPlayer: 
             return "{} ({})".format(self._players[player],actionString)
         else:
             return actionString
@@ -1752,7 +1777,7 @@ class ElGrandeGame(pyspiel.Game):
         cfilename=self._config_file + ".json"
         with open(cfilename) as f:
             self._config_data=json.load(f)
-	#couch defaults to localhost, or is settable from config
+        #couch defaults to localhost, or is settable from config
         self._couchip = self._config_data.get('couchip','127.0.0.1:5984')
         self._couchcred = self._config_data.get('couchcred','user:pass') 
         #express game info simply for ease of use calculating game states
@@ -1843,13 +1868,13 @@ class ElGrandeGameObserver:
     _PHASES=[[0,0,0],[0,0,0],[0,0,1],[0,1,0],[0,1,1],[1,0,0],[1,0,1],[1,1,0],[1,1,1],[1,1,1]]
 
     def __init__(self):
-        board_size=(_ST_IDCH*_MAX_CAB_AREAS*_MAX_PLAYERS)
+        board_size=(_ST_IDCH*_MAX_CAB_AREAS*_ST_BDY_END)
         gk_size=(_MAX_REGIONS*(_MAX_PLAYERS+1))
         cards_size=(_MAX_ACTION_CARDS*2)
         phase_size=3
 
         self.tensor = np.zeros(board_size + gk_size + cards_size + phase_size, np.float32)
-        self._board = self.tensor[:board_size].reshape(_ST_IDCH, _MAX_CAB_AREAS, _MAX_PLAYERS)
+        self._board = self.tensor[:board_size].reshape(_ST_IDCH, _MAX_CAB_AREAS, _ST_BDY_END)
         self._gk = self.tensor[board_size:(board_size+gk_size)].reshape(_MAX_REGIONS,_MAX_PLAYERS+1)
         self._cards = self.tensor[(board_size+gk_size):(board_size+gk_size+cards_size)]
         self._phase = self.tensor[(board_size+gk_size+cards_size):]
@@ -1860,17 +1885,17 @@ class ElGrandeGameObserver:
     def set_from(self, state, player):
         del player
         for channel in range(_ST_IDCH):
-            chmat = (state._board_state[:_MAX_CAB_AREAS,:_MAX_PLAYERS] >> channel)%2
-            self._board[channel,:,:]=chmat
+            chmat = (state._board_state[:state._game._num_cab_areas,:_ST_BDY_END] >> channel)%2
+            self._board[channel,:state._game._num_cab_areas,:_ST_BDY_END]=chmat
 
         for channel in range(_MAX_PLAYERS+1):
-            chvec = (state._board_state[:_MAX_REGIONS,_ST_BDY_GRANDE_KING] >> channel)%2
+            chvec = (state._board_state[:state._game._num_cab_areas,_ST_BDY_GRANDE_KING] >> channel)%2
             self._gk[:,channel]=chvec
 
         cards_ud_cd = [state._acard_state[s] in [_ST_AC_CHOSEN,_ST_AC_DONE] for s in range(state._game._num_action_cards)]
         cards_uc_dd = [state._acard_state[s] in [_ST_AC_DEALT,_ST_AC_DONE] for s in range(state._game._num_action_cards)]
         self._cards[:state._game._num_action_cards]=cards_ud_cd
-        self._cards[state._game._num_action_cards:]=cards_uc_dd
+        self._cards[-state._game._num_action_cards:]=cards_uc_dd
 
         self._phase[:]=self._PHASES[state._turn_state[_ST_TN_PHASE]]
 

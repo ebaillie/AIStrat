@@ -258,9 +258,15 @@ class MCTSBot(pyspiel.Bot):
   def restart_at(self, state):
     pass
 
-  def multi_step(self, state,step_to_end=False):
+  def multi_step(self, state, return_steps='this_player'):
     """Returns bot's next action at given state.
-       Also includes string of best children until a finishing condition and value of multi-step"""
+       Also includes string of best children until a finishing condition, value of multi-step
+       and 'recommend gap' (gap in value between this and the next best action)
+
+       Finishing conditions: 
+            'this_player' - return until any different player is current
+            'all' - all available steps
+            <playerid> - return until <playerid> is current """
 
     t1 = time.time()
     root = self.mcts_search(state)
@@ -282,18 +288,24 @@ class MCTSBot(pyspiel.Bot):
         print(best.children_str(chosen_state))
 
     mcts_action = best.action
+    rewards =[c.total_reward/c.explore_count for c in reversed(sorted(root.children, key=SearchNode.sort_key))]
+    returns = [(best.action,(best.total_reward/best.explore_count))] +self._player_path(best.player,best.best_child(),return_steps)
 
-    returns = [(best.action,(best.total_reward/best.explore_count))] +self._player_path(best.player,best.best_child(),step_to_end)
+    return mcts_action, [r[0] for r in returns], [r[1] for r in returns], (rewards[0]-rewards[1])
 
-    return mcts_action, [r[0] for r in returns], [r[1] for r in returns]
-
-  def _player_path(self,for_player,node,step_to_end):
-    if (not step_to_end) and (node.player!=for_player):
+  def _player_path(self,for_player,node,return_steps):
+    if (return_steps=='this_player') and (node.player!=for_player):
+      #requested to stop when a different player is encountered, and this has now happened
+      return []
+    elif (return_steps not in ['this_player','all']) and (node.player==int(return_steps)):
+      #requested to stop when specific playerid is encountered, and this has now happened
       return []
     elif len(node.children)==0:
+      #we have reached the end of the chain
       return [(node.action,node.total_reward)]
     else:
-      return [(node.action,(node.total_reward/node.explore_count))] + self._player_path(for_player,node.best_child(),step_to_end)
+      #no stop conditions encountered - continue
+      return [(node.action,(node.total_reward/node.explore_count))] + self._player_path(for_player,node.best_child(),return_steps)
 
   def step_with_recommend_gap(self, state):
     """Returns bot's action at given state, together with value gap between this act and the next best."""
