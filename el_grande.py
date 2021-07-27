@@ -129,7 +129,6 @@ class ElGrandeGameState(pyspiel.State):
         self._cur_player = 0
         self._game_step = 0
         self._num_players = game._num_players
-        self._game_state = game._game_state
         self._is_terminal = False
         self._history = []
         self._winner = False
@@ -139,8 +138,8 @@ class ElGrandeGameState(pyspiel.State):
         self._rsp_phase = None
         self._rsp_steps = []
         self._rsp_finalize = None
-        if self._game_state != '':
-            self._load_game_state(self._game_state)
+        if self._game._game_state != '':
+            self._load_game_state(self._game._game_state)
         else:
             #start a game with a random player assortment
             self._players=["P"+str(i) for i in range(self._num_players)]
@@ -344,14 +343,20 @@ class ElGrandeGameState(pyspiel.State):
         self._blank_board()
         self._state_add_players(jsonData['players'])
         self._state_add_king(jsonData['king'])
-        self._state_add_cabs_grandes(jsonData['pieces'])
         
         #backwards compatibility - importing from TTS version of game unless there's a cardinfo field 
         if jsonData.get('cardinfo',[])==[]:
+            self._state_add_cabs_grandes(jsonData['pieces'])
             self._state_add_tts_deck_info(jsonData['cards'],jsonData['pastcards'],jsonData['deckpositions'],jsonData['turninfo'])
             self._state_add_tts_turn_info(jsonData['turninfo'])
+        elif jsonData.get('turninfo',[])==[]:
+            #no turn info yet - this is initialization
+            self._state_add_init_data(jsonData['grandes'],jsonData['cardinfo'])
+            self._turn_state[_ST_TN_PHASE]=_ST_PHASE_POWER
+            self._turn_state[_ST_TN_ROUND]=1
         else:
             #native python version - compatible with current export
+            self._state_add_cabs_grandes(jsonData['pieces'])
             self._state_add_card_info(jsonData['cardinfo'],jsonData['turninfo']['round'])
             self._state_add_turn_info(jsonData['turninfo'])
             self._state_add_point_info(jsonData['pointinfo'])
@@ -386,7 +391,20 @@ class ElGrandeGameState(pyspiel.State):
 
     def _json_for_king(self):
         return self._game._regions[self._king_region()]
-    
+   
+    def _state_add_init_data(self,grandes,cardrounds):
+        #put cabs and grandes down in known regions
+        for pl in grandes:
+            i=self._get_pid(pl)
+            region = self._get_rid(grandes[pl])
+            self._board_state[region,i]=2
+            self._board_state[self._game._court_idx,i]=7
+            self._board_state[self._game._province_idx,i]=21
+            self._board_state[region,_ST_BDY_GRANDE_KING] |= (pow(2,i))
+        #determine order of cards
+        self._acard_round=np.array(cardrounds)
+        self._acard_state = np.array([_ST_AC_DEALT if self._acard_round[r]==1 else _ST_AC_UNPLAYED for r in range(len(self._acard_round))])
+
     def _state_add_cabs_grandes(self,data):
         for player_name in data.keys():
             player_id = self._get_pid(player_name)
@@ -1706,7 +1724,6 @@ class ElGrandeGameState(pyspiel.State):
         my_copy._acard_round = self._acard_round.copy()
         my_copy._board_state = self._board_state.copy()
         my_copy._cur_player=self._cur_player
-        my_copy._game_state=self._game_state
         my_copy._end_turn = self._end_turn
         my_copy._history=self._history.copy()
         my_copy._is_terminal=self._is_terminal
