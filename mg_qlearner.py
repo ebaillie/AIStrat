@@ -41,6 +41,7 @@ flags.DEFINE_boolean(
     "iteractive_play", True,
     "Whether to run an interactive play with the agent after training.")
 
+logging.basicConfig(filename='mg_qlearner.log', level=logging.INFO)
 
 
 def command_line_action(time_step):
@@ -117,7 +118,7 @@ def main(_):
   # 2. Play from the command line against the trained agent.
   human_player = 1
   if True:
-    logging.info("You are playing as %s", "O" if human_player else "X")
+    print("You are playing as {0}".format(env._state._estate._players[human_player]))
     time_step = env.reset()
     while not time_step.last():
       player_id = time_step.observations["current_player"]
@@ -125,7 +126,8 @@ def main(_):
         agent_out = agents[human_player].step(time_step, is_evaluation=True)
         #logging.info("\n%s", agent_out.probs)
         #logging.info("\n%s", pretty_board(time_step))
-        logging.info("\n%s", env._state)
+        print("\n%s", env._state._estate)
+        print("\n%s", [(c,env._state.action_to_string(c)) for c in env._state.legal_actions()])
         action = command_line_action(time_step)
       else:
         agent_out = agents[player_id].step(time_step, is_evaluation=True)
