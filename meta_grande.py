@@ -16,7 +16,8 @@ _DEFAULT_CONFIG = json.dumps({"players":["Red","White","Blue","Green"],
                 "grandes":{"Red":"Granada","White":"Pais Vasco","Blue":"Sevilla","Green":"Galicia"},
                 "king":"Castilla la Vieja",
                 "config":"el_grande_default"})
-_DEFAULT_SIMS = 25
+_DEFAULT_SIMS = 10
+_QUICKHEX = ["0","1","2","3","4","5","6","7","8","9","A","B","C","D"]
 
 _PLAYERS = 4
 _DECKS = 5
@@ -167,7 +168,7 @@ class MetaGrandeGameState(pyspiel.State):
             checkround=self._estate._get_round()
             
             #choose the card action then play out the card action including sensible simulation of likely results
-            self._estate.apply_action(cardid - _ACT_DECKS + el_grande._ACT_CARDS)
+            self._estate.apply_action(cardid + el_grande._ACT_CARDS)
             self._estate._end_turn=3*((self._estate._get_round()+2)//3)
             plan = self._mbot.multi_step(self._estate,'this_player')
             self._estate._end_turn=9
@@ -257,8 +258,10 @@ class MetaGrandeGameState(pyspiel.State):
         return [self.clone()]
 
     def __str__(self):
-        # courtcabs/provincecabs is only state so far - 0..6 or M for Max
-        retstr=""
+	# round number
+        # courtcabs/provincecabs  - 0..6 or M for Max
+	# powercard played - 0 for none or card in hex
+        retstr=str(self._get_round())+"/"
         for p in range(self._estate._num_players):
             cc=self._estate._region_cabcount(self._estate._game._court_idx,p)
             retstr+=str(cc) if cc<7 else "M"
@@ -266,6 +269,12 @@ class MetaGrandeGameState(pyspiel.State):
         for p in range(self._estate._num_players):
             cc=self._estate._region_cabcount(self._estate._game._province_idx,p)
             retstr+=str(cc) if cc<7 else "M"
+        retstr+="/"
+        for p in range(self._estate._num_players):
+            pc = self._estate._get_power_card()
+            cc=0 if len(pc)==0 else pc[0]+1
+            retstr+=_QUICKHEX[cc]
+
         return retstr
 
     def clone(self):
@@ -347,14 +356,18 @@ class MetaGrandeGame(pyspiel.Game):
 class MetaGrandeGameObserver:
     """Observer, conforming to the PyObserver interface (see observer.py).
        3 bits per player - court/province 0..6 or 7+
+       4 bits per player - power card currently played (0 for unplayed)
+       4 bits total - round number
     """
-
+    
     def __init__(self):
-        tensor_size = _PLAYERS*2*_ST_IDCH
+        tensor_size = _PLAYERS*(2*_ST_IDCH + 4) + 4
         self.tensor = np.zeros(tensor_size, np.float32)
         self._court = self.tensor[:_PLAYERS*_ST_IDCH]
-        self._province = self.tensor[_PLAYERS*_ST_IDCH:]
-        self.dict = {"court": self._court,"province":self._province}
+        self._province = self.tensor[_PLAYERS*_ST_IDCH:2*_PLAYERS*_ST_IDCH]
+        self._power = self.tensor[2*_PLAYERS*_ST_IDCH:-4]
+        self._round = self.tensor[-4:]
+        self.dict = {"court": self._court,"province":self._province, "power": self._power, "round":self._round}
 
 
     def set_from(self, state, player):
@@ -366,6 +379,14 @@ class MetaGrandeGameObserver:
             pmat=(province>>ch)%2
             self._court[ch*_PLAYERS:(ch+1)*_PLAYERS]=cmat
             self._province[ch*_PLAYERS:(ch+1)*_PLAYERS]=pmat
+
+        binstr=""
+        for p in range(state._estate._num_players):
+            pc = state._estate._get_power_card(p)
+            cc = 0 if len(pc)==0 else pc[0]+1
+            binstr+=bin(32+cc)[4:]
+        self._power[:]=np.array([int(b) for b in binstr])
+        self._round[:]=np.array([int(b) for b in bin(32+state._estate._get_round())[4:]])
 
     def string_from(self, state, player):
         del player
