@@ -289,9 +289,13 @@ class MCTSBot(pyspiel.Bot):
 
     mcts_action = best.action
     rewards =[c.total_reward/c.explore_count for c in reversed(sorted(root.children, key=SearchNode.sort_key))]
-    returns = [(best.action,(best.total_reward/best.explore_count))] +self._player_path(best.player,best.best_child(),return_steps)
-
-    return mcts_action, [r[0] for r in returns], [r[1] for r in returns], (rewards[0]-rewards[1])
+    returns = [(best.action,(best.total_reward/best.explore_count))] 
+    if len(best.children)>0:
+      returns = returns +self._player_path(best.player,best.best_child(),return_steps)
+    if len(rewards)>1: 
+      return mcts_action, [r[0] for r in returns], [r[1] for r in returns], (rewards[0]-rewards[1])
+    else: 
+      return mcts_action, [r[0] for r in returns], [r[1] for r in returns], rewards[0]
 
   def _player_path(self,for_player,node,return_steps):
     if (return_steps=='this_player') and (node.player!=for_player):
