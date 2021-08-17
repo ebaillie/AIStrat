@@ -93,6 +93,11 @@ _ACT_TRIGGER = _ACT_SKIP + 1 #explicitly trigger an instant card action
 _ACT_END = _ACT_TRIGGER + 1 
 
 
+#possible score objectives - default is maximum score advantage. Playername to score against also accepted
+_SCORE_ADV="advantage"
+_SCORE_MAX="maximum"
+_SCORE_BOARD="board"
+_SCORE_FIRSTS="firsts"
 
 _GAME_TYPE = pyspiel.GameType(
     short_name="el_grande",
@@ -138,6 +143,7 @@ class ElGrandeGameState(pyspiel.State):
         self._rsp_phase = None
         self._rsp_steps = []
         self._rsp_finalize = None
+        self._objectives = [_SCORE_ADV for i in range(self._num_players)]
         if self._game._game_state != '':
             self._load_game_state(self._game._game_state)
         else:
@@ -251,7 +257,17 @@ class ElGrandeGameState(pyspiel.State):
         else:
             return self._game._num_regions - len(np.where(self._board_state[:self._game._num_regions,player]==0)[0])
 
- 
+    def _region_firsts(self,player,withCastillo=True):
+        #in how many regions is this player placed first?
+        firsts=0
+        regions=self._game._num_ext_regions if withCastillo else self._game._num_regions
+        for r in range(regions):
+            top = self._board_state[r,player]==max(self._board_state[r,:self._num_players]) 
+            topcount = len(np.where(self._board_state[r,:self._num_players]==max(self._board_state[r,:self._num_players]))[0])
+        if top and topcount==1:
+            firsts+=1
+        return firsts
+
     def _board_cabs(self,player):
         #how many total caballeros does this player have on the board?
         return int(sum(self._board_state[:self._game._num_ext_regions,player]))
@@ -342,8 +358,9 @@ class ElGrandeGameState(pyspiel.State):
         self._history = jsonData.get('history',[])
         self._blank_board()
         self._state_add_players(jsonData['players'])
+        self._objectives=jsonData.get('objectives',[_SCORE_ADV for i in range(self._num_players)])
         self._state_add_king(jsonData['king'])
-        
+ 
         #backwards compatibility - importing from TTS version of game unless there's a cardinfo field 
         if jsonData.get('cardinfo',[])==[]:
             self._state_add_cabs_grandes(jsonData['pieces'])
@@ -366,6 +383,7 @@ class ElGrandeGameState(pyspiel.State):
         jsonData['history']=self._history.copy()
         jsonData['players']=self._json_for_players()
         jsonData['king']=self._json_for_king()
+        jsonData['objectives']=self._objectives
         jsonData['pieces']=self._json_for_pieces()
         jsonData['cardinfo']=self._json_for_card_info()
         jsonData['turninfo']=self._json_for_turn_info()
@@ -1342,15 +1360,31 @@ class ElGrandeGameState(pyspiel.State):
         self._move_castillo_pieces()
         new_scores+=self._score_all_regions()
         self._set_rewards(new_scores)
-        final_scores = self._current_score()
         self._board_state[:,_ST_BDY_SECRET]=0 
         if self._turn_state[_ST_TN_ROUND]==self._end_turn:
             # turn scores into win points
-            self._win_points = self._scores_as_margins(final_scores)
+            self._win_points = self._set_win_points()
             self._cur_player = pyspiel.PlayerId.TERMINAL
             self._is_terminal=True
         else:
             self._update_players_after_action()
+
+    def _set_win_points(self):
+        points=np.full(self._num_players,0)
+        scores=self._current_score()
+        for pl in range(self._num_players):
+            if self._objectives[pl]==_SCORE_ADV:
+                points[pl]=self._scores_as_margins(scores)[pl]
+            elif self._objectives[pl]==_SCORE_MAX:
+                points[pl]=scores[pl]
+            elif self._objectives[pl]==_SCORE_BOARD:
+                points[pl]=self._region_presence(pl)
+            elif self._objectives[pl]==_SCORE_FIRSTS:
+                points[pl]=self._region_firsts(pl)
+            elif self._objectives[pl] in self._players:
+                rival=self._players.index(self._objectives[pl])
+                points[pl]=scores[pl]-scores[rival]
+        return points
 
     def _update_players_after_power(self):
         powcards = {i:self._pcard_state[i] for i in range(self._game._num_power_cards) if self._pcard_state[i]>0} 
@@ -1744,6 +1778,7 @@ class ElGrandeGameState(pyspiel.State):
         my_copy._win_points = self._win_points.copy()
         my_copy._state_returns = self._state_returns.copy()
         my_copy._winner=self._winner
+        my_copy._objectives=self._objectives
         return my_copy
 
 _games=[]
