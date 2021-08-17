@@ -264,8 +264,8 @@ class ElGrandeGameState(pyspiel.State):
         for r in range(regions):
             top = self._board_state[r,player]==max(self._board_state[r,:self._num_players]) 
             topcount = len(np.where(self._board_state[r,:self._num_players]==max(self._board_state[r,:self._num_players]))[0])
-        if top and topcount==1:
-            firsts+=1
+            if top and topcount==1:
+                firsts+=1
         return firsts
 
     def _board_cabs(self,player):
@@ -323,18 +323,15 @@ class ElGrandeGameState(pyspiel.State):
         self._init_move_info()
 
     def _shuffle_acards(self):
-        for i in range(self._game._num_decks):
-            deckname='Deck'+str(i+1)
-            order = self._game._decks[deckname].copy()
-            random.shuffle(order)
-            for j in range(len(order)):
-                cid = self._get_cid(order[j])
-                self._acard_round[cid]=j+1
-                if j==0:
-                    self._acard_state[cid] = _ST_AC_DEALT
-        #final deck
-        self._acard_round[-1] = 1
-        self._acard_state[-1] = _ST_AC_DEALT
+        allcards=[]
+        for deckname in self._game._deck_names:
+            cardorder = [i+1 for i in range(len(self._game._decks[deckname]))]
+            random.shuffle(cardorder)
+            allcards=allcards+cardorder
+        self._acard_round=np.array(allcards)
+        firstround=np.where(self._acard_round==1)[0]
+        for j in firstround:
+            self._acard_state[j] = _ST_AC_DEALT
 
     def _generate_board(self,jsonData):
         self._blank_board(True)
