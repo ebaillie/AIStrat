@@ -1,20 +1,6 @@
-# Copyright 2019 DeepMind Technologies Ltd. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+"""Tabular Q-Learner example on SimpleGrande, focusing on final player position.
 
-"""Tabular Q-Learner example on Connect 4.
-
-Two Q-Learning agents are trained by playing against each other. Then, the game
+Q-Learning agents are trained by playing against each other, random, and mcts. Then, the game
 can be played against the agents from the command line.
 """
 
@@ -30,6 +16,8 @@ import numpy as np
 import simple_grande
 import pickle
 import collections
+import mcts_ext as mcts
+import random
 
 from open_spiel.python import rl_environment
 from open_spiel.python.algorithms import random_agent
@@ -39,13 +27,11 @@ FLAGS = flags.FLAGS
 
 flags.DEFINE_integer("num_episodes", int(5e4), "Number of train episodes.")
 flags.DEFINE_boolean(
-    "iteractive_play", True,
+    "interactive_play", True,
     "Whether to run an interactive play with the agent after training.")
 
 logging.basicConfig(filename='sg_qlearner.log', level=logging.INFO)
-
-def globaldict():
-  return collections.defaultdict(float)
+NUM_PLAYERS = 4
 
 def command_line_action(time_step):
   """Gets a valid action from the user on the command line."""
@@ -63,37 +49,46 @@ def command_line_action(time_step):
   return action
 
 
-def eval_against_random_bots(env, trained_agents, random_agents, num_episodes):
-  """Evaluates `trained_agents` against `random_agents` for `num_episodes`."""
-  wins = np.zeros(4)
-  for player_pos in range(4):
-    cur_agents = [random_agents[0],random_agents[1],random_agents[2],random_agents[3]]
-    cur_agents[player_pos] = trained_agents[player_pos]
-    for _ in range(num_episodes):
-      time_step = env.reset()
-      while not time_step.last():
-        player_id = time_step.observations["current_player"]
+def eval_against_random_bots(env, pos, trained_agents, random_agents, mbot, num_episodes):
+  """Evaluates trained agent at `pos` against two `random_agents` and an mcts bot for `num_episodes`."""
+  wins = 0
+  cur_agents = random_agents
+  mbot_id=random.choice([i for i in range(NUM_PLAYERS) if i!=pos])
+  cur_agents[pos]=trained_agents[pos]
+  for _ in range(num_episodes):
+    time_step = env.reset()
+    gameState=mbot._game.new_initial_state()
+    while not time_step.last():
+      player_id = time_step.observations["current_player"]
+      if player_id==mbot_id:
+        action=mbot.step(gameState)
+      else:
         agent_output = cur_agents[player_id].step(time_step, is_evaluation=True)
-        time_step = env.step([agent_output.action])
-      if time_step.rewards[player_pos] > 0:
-        wins[player_pos] += 1
+        action=agent_output.action
+      time_step = env.step([action])
+      gameState.apply_action(action)
+    if time_step.rewards[pos] > 0:
+      wins += 1
   return wins / num_episodes
 
 
 def main(_):
-  game = "simple_grande"
+  gamename = "simple_grande"
   num_players =4 
+  key_agent_id = 3
+  sims=100
 
-  env = rl_environment.Environment(game)
+  env = rl_environment.Environment(gamename)
   num_actions = env.action_spec()["num_actions"]
-
+  game = simple_grande.SimpleGrandeGame()
+  rng = np.random.RandomState()
+  evaluator = mcts.RandomRolloutEvaluator(1, rng)
+  mbot = mcts.MCTSBot(game,2,sims,evaluator,random_state=rng,solve=True,verbose=False)
+  
   agents = [
       tabular_qlearner.QLearner(player_id=idx, num_actions=num_actions)
       for idx in range(num_players)
   ]
-
-  for a in agents:
-    a._q_values=collections.defaultdict(globaldict)
 
   # random agents for evaluation
   random_agents = [
@@ -105,23 +100,37 @@ def main(_):
   training_episodes = FLAGS.num_episodes
   for cur_episode in range(training_episodes):
     if cur_episode % int(1e3) == 0:
-      win_rates = eval_against_random_bots(env, agents, random_agents, 100)
+      win_rates = eval_against_random_bots(env, key_agent_id, agents, random_agents, mbot, 100)
       logging.info("Starting episode %s, win_rates %s", cur_episode, win_rates)
     time_step = env.reset()
+    gameState = mbot._game.new_initial_state()
+    training_agents=[agents[i] for i in range(num_players)]
+    #occasionally put in a random agent or an mcts agent
+    rand=random.randint(0,10)
+    mbot_id=-1
+    if rand<3:
+      training_agents[rand]=random_agents[rand]
+    elif rand==10:
+      mbot_id=random.randint(0,2)
     while not time_step.last():
       player_id = time_step.observations["current_player"]
-      agent_output = agents[player_id].step(time_step)
-      time_step = env.step([agent_output.action])
+      if player_id==mbot_id:
+        action=mbot.step(gameState)
+      else:
+        agent_output = training_agents[player_id].step(time_step)
+        action=agent_output.action
+      time_step = env.step([action])
+      gameState.apply_action(action)
 
     # Episode is over, step all agents with final info state.
-    for agent in agents:
-      agent.step(time_step)
+    for agent in training_agents:
+      if agent._player_id!=mbot_id:
+        agent.step(time_step)
 
-  for i in range(4):
-    dumpname='sg_qtab{0}.pickle'.format(i)
-    pickle.dump( agents[i], open( dumpname, "wb" ) )
+  dumpname='sg_qtab_agent3.pickle'
+  pickle.dump( agents[key_agent_id], open( dumpname, "wb" ) )
   
-  if not FLAGS.iteractive_play:
+  if not FLAGS.interactive_play:
     return
 
   # 2. Play from the command line against the trained agent.
