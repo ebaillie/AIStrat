@@ -128,6 +128,27 @@ class SimpleGrandeGameState(pyspiel.State):
     # OpenSpiel (PySpiel) API functions are below. These need to be provided by
     # every game. Some not-often-used methods have been omitted.
 
+    def _load_from_eg(self,eg):
+        #set the state to the middle of an El Grande game
+        assert(eg._num_players==_PLAYERS)
+        for pl in range(_PLAYERS):
+            self._cabs[pl,_PROVINCE]=eg._region_cabcount(eg._game._province_idx,pl)
+            self._cabs[pl,_COURT]=eg._region_cabcount(eg._game._court_idx,pl)
+            self._cabs[pl,_REGION]=30-self._cabs[pl,_PROVINCE]-self._cabs[pl,_COURT]
+            pc=eg._get_power_card(pl)
+            pastpc=eg._get_past_power_cards(pl)
+            self._power_out[pl]=-1 if len(pc)==0 else pc[0]
+            self._power_available_now[pc]=False
+            self._power_available[pl,pastpc]=False
+        self._score=eg._current_score().copy()
+        deck_cards=np.append(np.where(eg._acard_round==eg._get_round())[0],[42])
+        self._deck_available=(eg._acard_state[deck_cards]==1)[:5]
+        self._round=eg._get_round()
+        self._phase=_PHASE_ACTION
+        if eg._get_current_phase_name()=='power':
+          self._phase=_PHASE_POWER
+        self._cur_player=eg._cur_player
+
     def current_player(self):
         """Returns id of the next player to move, or TERMINAL if game is over."""
         if self._is_terminal:
@@ -206,8 +227,8 @@ class SimpleGrandeGameState(pyspiel.State):
         else:
             #choose this deck
             self._deck_available[action - _ACT_DECKS]=False
-            self._cab_movement(self._cur_player,(action - _ACT_DECKS + 1))
-            self._score[self._cur_player]+=self._score_card(self._cur_player,(action - _ACT_DECKS + 1))
+            moved_cabs=self._cab_movement(self._cur_player,(action - _ACT_DECKS + 1))
+            self._score[self._cur_player]+=self._score_card(self._cur_player,(action - _ACT_DECKS + 1),moved_cabs)
             self._set_round_phase()
 
     def _cab_movement(self,player,deck):
@@ -218,10 +239,13 @@ class SimpleGrandeGameState(pyspiel.State):
         court_to_region = min(deck,self._cabs[player,_COURT])
         self._cabs[player,_COURT]-=court_to_region
         self._cabs[player,_REGION]+=court_to_region
+        return court_to_region
 
-    def _score_card(self, player, deck):
+    def _score_card(self, player, deck,moved_cabs):
         turn_position = 4-np.count_nonzero(self._deck_available)
-        score = _DECKVALS[(self._round-1)][turn_position][deck-1]
+        #reduce score proportionately if you don't have enough cabs to play this deck effectively
+        play_factor=moved_cabs/deck
+        score = _DECKVALS[(self._round-1)][turn_position][deck-1]*play_factor
         return score
             
     def _set_round_phase(self):
@@ -235,7 +259,7 @@ class SimpleGrandeGameState(pyspiel.State):
             powersleft=[a for a in self._power_out if a<self._power_out[self._cur_player]]
             if len(powersleft)==0:
                 if self._round % 3 == 0:
-                    newscores = self._round * 4 * (self._cabs[:,_REGION]/max(self._cabs[:,_REGION]))
+                    newscores = self._round * 3 * (self._cabs[:,_REGION]/max(self._cabs[:,_REGION]))
                     self._score += newscores
  
                 if self._round==_MAX_TURNS:
@@ -324,15 +348,9 @@ class SimpleGrandeGameState(pyspiel.State):
         retstr=str(self._round)+"/"
         for p in range(_PLAYERS):
             cc=self._cabs[p,_COURT]
-            retstr+=str(_COURTCAT[cc]) 
-        retstr+="/"
-        for p in range(_PLAYERS):
-            cc=self._cabs[p,_PROVINCE]
-            retstr+=str(_PROVCAT[cc]) 
-        retstr+="/"
-        for p in range(_PLAYERS):
-            retstr+=_QUICKHEX[self._power_out[p]+1]
-
+            retstr+="{0}:{1}:{2}({3})".format(self._cabs[p,_COURT],self._cabs[p,_PROVINCE],self._cabs[p,_REGION],self._power_out[p]+1) 
+            retstr+="/"
+        retstr+="[{0}]".format([round(s,2) for s in self._score])
         return retstr
 
     def clone(self):

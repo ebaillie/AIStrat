@@ -32,6 +32,7 @@ flags.DEFINE_boolean(
 
 logging.basicConfig(filename='sg_qlearner.log', level=logging.INFO)
 NUM_PLAYERS = 4
+SIMS=50
 
 def command_line_action(time_step):
   """Gets a valid action from the user on the command line."""
@@ -76,20 +77,24 @@ def main(_):
   gamename = "simple_grande"
   num_players =4 
   key_agent_id = 3
-  sims=100
+  dumpname='sg_qtab_agent3.pickle'
 
   env = rl_environment.Environment(gamename)
   num_actions = env.action_spec()["num_actions"]
   game = simple_grande.SimpleGrandeGame()
   rng = np.random.RandomState()
   evaluator = mcts.RandomRolloutEvaluator(1, rng)
-  mbot = mcts.MCTSBot(game,2,sims,evaluator,random_state=rng,solve=True,verbose=False)
+  mbot = mcts.MCTSBot(game,2,SIMS,evaluator,random_state=rng,solve=True,verbose=False)
   
   agents = [
       tabular_qlearner.QLearner(player_id=idx, num_actions=num_actions)
       for idx in range(num_players)
   ]
 
+  try:
+    agents[key_agent_id]=pickle.load(open( dumpname, "rb" ) )
+  except:
+    print("Nothing to load")
   # random agents for evaluation
   random_agents = [
       random_agent.RandomAgent(player_id=idx, num_actions=num_actions)
@@ -99,8 +104,8 @@ def main(_):
   # 1. Train the agents
   training_episodes = FLAGS.num_episodes
   for cur_episode in range(training_episodes):
-    if cur_episode % int(1e3) == 0:
-      win_rates = eval_against_random_bots(env, key_agent_id, agents, random_agents, mbot, 100)
+    if cur_episode % int(2e3) == 0:
+      win_rates = eval_against_random_bots(env, key_agent_id, agents, random_agents, mbot, 20)
       logging.info("Starting episode %s, win_rates %s", cur_episode, win_rates)
     time_step = env.reset()
     gameState = mbot._game.new_initial_state()
@@ -127,23 +132,26 @@ def main(_):
       if agent._player_id!=mbot_id:
         agent.step(time_step)
 
-  dumpname='sg_qtab_agent3.pickle'
   pickle.dump( agents[key_agent_id], open( dumpname, "wb" ) )
   
   if not FLAGS.interactive_play:
     return
 
-  # 2. Play from the command line against the trained agent.
-  human_player =0 
+  # 2. Play from the command line against the trained agent,a random agent and mcts agent.
+  human_player =0
+  training_agents=[random_agents[0],random_agents[1],random_agents[2],agents[3]] 
+  mbot_id=2
   if True:
-    print("You are playing as {0}".format(human_player))
+    print("You are playing as {0}, trained agent is {1} mcts is {2}".format(human_player,key_agent_id,mbot_id))
     time_step = env.reset()
+    gameState=mbot._game.new_initial_state()
     while not time_step.last():
       player_id = time_step.observations["current_player"]
-      if player_id == human_player:
+      if player_id==mbot_id:
+        action=mbot.step(gameState)
+      elif player_id == human_player:
         agent_out = agents[human_player].step(time_step, is_evaluation=True)
         #logging.info("\n%s", agent_out.probs)
-        #logging.info("\n%s", pretty_board(time_step))
         print("\n%s", env._state)
         print("\n%s", [(c,env._state.action_to_string(c)) for c in env._state.legal_actions()])
         action = command_line_action(time_step)
@@ -151,18 +159,17 @@ def main(_):
         agent_out = agents[player_id].step(time_step, is_evaluation=True)
         action = agent_out.action
       time_step = env.step([action])
+      gameState.apply_action(action)
+      print("\n%s", action)
 
     logging.info("\n%s", time_step)
+    print("\n%s", gameState)
 
     logging.info("End of game!")
     if time_step.rewards[human_player] > 0:
       logging.info("You win")
-    elif time_step.rewards[human_player] < 0:
-      logging.info("You lose")
     else:
-      logging.info("Draw")
-    # Switch order of players
-    human_player = 1 - human_player
+      logging.info("You lose")
 
 
 if __name__ == "__main__":
