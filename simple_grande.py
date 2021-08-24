@@ -13,43 +13,19 @@ _QUICKHEX = ["0","1","2","3","4","5","6","7","8","9","A","B","C","D"]
 _COURTCAT = [0,1,2,3,4,4,5,5,5,6,6,6,6,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7]
 _PROVCAT = [0,0,0,0,0,1,1,1,1,1,2,2,2,2,2,3,3,3,3,3,3,3,3,3,3,3,3,3,3]
 
-#values for playing deck cards by round and turn position, experimentally generated using default config
-_DECKVALS = [[[0.0, 8.5, 13.6, 17.0, 20.3],
-[0.0, 5.0, 10.8, 14.6, 16.0],
-[0.0, 2.1, 2.7, 11.2, 13.0],
-[0.0, 2.0, 0.4, 6.5, 8.3]],
-[[0.0, 8.0, 11.4, 12.4, 15.6],
-[0.0, 7.8, 8.5, 11.0, 14.3],
-[0.0, 7.6, 10.6, 10.6, 11.7],
-[0.0, 0.9, 3.6, 5.4, 6.4]],
-[[0.0, 6.5, 9.6, 12.2, 15.9],
-[0.0, 2.6, 7.5, 8.6, 13.8],
-[0.0, 4.0, 6.1, 9.1, 12.5],
-[0.0, 3.0, 2.7, 5.2, 8.9]],
-[[0.0, 9.1, 7.2, 8.4, 12.5],
-[0.0, 7.8, 4.8, 6.4, 10.8],
-[0.0, 5.6, 4.0, 5.2, 4.7],
-[0.0, 3.5, 0.0, 5.2, 8.8]],
-[[0.3, 2.4, 4.6, 5.9, 7.3],
-[0.3, 2.6, 5.5, 6.2, 8.1],
-[0.2, 0.6, 4.2, 6.6, 5.6],
-[0.0, 0.0, 3.1, 2.6, 2.5]],
-[[4.7, 0.1, 4.1, 6.0, 9.5],
-[4.6, 0.0, 2.1, 5.4, 8.5],
-[5.0, 0.0, 3.5, 2.0, 7.0],
-[2.2, 0.0, 0.5, 0.6, 5.0]],
-[[0.0, 2.8, 6.2, 6.0, 8.0],
-[0.0, 1.0, 2.8, 3.2, 4.6],
-[0.0, 1.7, 3.2, 3.0, 5.3],
-[0.0, 0.0, 4.3, 0.0, 2.5]],
-[[0.0, 1.5, 5.2, 4.0, 5.6],
-[0.0, 0.9, 4.4, 3.9, 6.2],
-[0.2, 1.1, 2.9, 2.9, 3.4],
-[0.0, 0.3, 3.2, 0.3, 2.0]],
-[[0.0, 2.1, 5.1, 5.3, 6.9],
-[0.0, 1.8, 3.6, 4.8, 5.1],
-[0.0, 1.4, 2.5, 4.2, 6.6],
-[0.0, 0.0, 0.9, 2.8, 7.4]]]
+#values for playing deck cards by roundpos and turn position, experimentally generated using default config
+_DECKVALS = [[[20.3, 21.4, 22.7, 22.6, 24.7],
+[19.9, 19.2, 21.3, 21.2, 23.8],
+[20.3, 19.8, 22.4, 22.5, 24.5],
+[22.2, 22.7, 25.2, 25.1, 28.7]],
+[[1.4, 2.7, 3.1, 1.9, 1.7],
+[0.9, 1.6, 2.2, 0.6, 0.9],
+[0.4, 1.3, 2.0, 0.6, 0.5],
+[0.0, 0.9, 1.5, 0.0, 0.0]],
+[[3.2, 3.1, 4.9, 3.3, 3.3],
+[1.7, 1.8, 3.0, 1.3, 1.6],
+[0.7, 1.7, 2.9, 0.3, 0.9],
+[0.0, 1.0, 3.2, 0.0, 0.0]]]
 
 _PLAYERS = 4
 _DECKS = 5
@@ -140,7 +116,7 @@ class SimpleGrandeGameState(pyspiel.State):
             self._power_out[pl]=-1 if len(pc)==0 else pc[0]
             self._power_available_now[pc]=False
             self._power_available[pl,pastpc]=False
-        self._score=eg._current_score().copy()
+        self._score=eg._current_score().copy().astype(float)
         deck_cards=np.append(np.where(eg._acard_round==eg._get_round())[0],[42])
         self._deck_available=(eg._acard_state[deck_cards]==1)[:5]
         self._round=eg._get_round()
@@ -245,7 +221,7 @@ class SimpleGrandeGameState(pyspiel.State):
         turn_position = 4-np.count_nonzero(self._deck_available)
         #reduce score proportionately if you don't have enough cabs to play this deck effectively
         play_factor=moved_cabs/deck
-        score = _DECKVALS[(self._round-1)][turn_position][deck-1]*play_factor
+        score = _DECKVALS[(self._round%3)][turn_position][deck-1]*play_factor
         return score
             
     def _set_round_phase(self):
@@ -258,10 +234,6 @@ class SimpleGrandeGameState(pyspiel.State):
         else:
             powersleft=[a for a in self._power_out if a<self._power_out[self._cur_player]]
             if len(powersleft)==0:
-                if self._round % 3 == 0:
-                    newscores = self._round * 3 * (self._cabs[:,_REGION]/max(self._cabs[:,_REGION]))
-                    self._score += newscores
- 
                 if self._round==_MAX_TURNS:
                     self._is_terminal=True
                     self._win_points = self._score//max(self._score)
