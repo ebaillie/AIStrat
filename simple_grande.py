@@ -120,10 +120,24 @@ class SimpleGrandeGameState(pyspiel.State):
         deck_cards=np.append(np.where(eg._acard_round==eg._get_round())[0],[42])
         self._deck_available=(eg._acard_state[deck_cards]==1)[:5]
         self._round=eg._get_round()
-        self._phase=_PHASE_ACTION
         if eg._get_current_phase_name()=='power':
           self._phase=_PHASE_POWER
-        self._cur_player=eg._cur_player
+          self._cur_player=eg._cur_player
+        elif eg._get_current_phase_name()=='action':
+          self._phase=_PHASE_ACTION
+          self._cur_player=eg._cur_player
+        elif eg._get_current_phase_name()=='scoring':
+          self._phase=_PHASE_ACTION
+          self._power_out=[-1,-1,-1,-1]
+          self._set_round_phase()
+        elif eg._get_current_phase_name()=='response':
+          self._phase=_PHASE_ACTION
+          self._cur_player=eg._rsp_player
+          self._set_round_phase()
+        else:
+          self._phase=_PHASE_ACTION
+          self._cur_player=eg._cur_player
+          self._set_round_phase()
 
     def current_player(self):
         """Returns id of the next player to move, or TERMINAL if game is over."""
