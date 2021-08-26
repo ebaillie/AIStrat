@@ -1,6 +1,9 @@
 #utility functions for extracting metrics and information from el_grande game or game state
 import numpy as np
 import el_grande
+import simple_grande
+from open_spiel.python.algorithms import tabular_qlearner
+from open_spiel.python import rl_environment
 
 def internal_rep(state,pl):
   if type(pl)==str:
@@ -25,12 +28,42 @@ def next_turn_position(state,pl):
     return(-1)
   startplayer = int(np.log2(state._pcard_state[pcs[0]]))
   return((pl-startplayer)%(state._num_players)+1)
-  
+
+def cards_out(state):
+  cards=np.append(np.where(state._acard_round==state._get_round()),[42])[:5] 
+  return[state._game._cardtrack[c] for c in cards]
  
 def board_cabs(state,player):
   #how many total caballeros does this player have on the board?
   player=internal_rep(state,player)
   return int(sum(state._board_state[:state._game._num_ext_regions,player]))
+
+def playMetaFromState(estate,qagent):
+  #returns playerid/el_grande action pairs for projected power and action phases,
+  #skipping other phases
+
+  sg=simple_grande.SimpleGrandeGame()
+  sgs=sg.new_initial_state()
+  sgs._load_from_eg(estate)
+  env = rl_environment.Environment("simple_grande")
+  env.reset()
+  env.set_state(sgs)
+  time_step=env.get_time_step()
+  actions=[]
+  while not time_step.last():
+    player_id = time_step.observations["current_player"]
+    qagent._player_id=player_id
+    #note - can make this close to deterministic by changing is_evaluation to True
+    agent_output =qagent.step(time_step, is_evaluation=False)
+    action=agent_output.action
+    time_step = env.step([action])
+    #translate actions back to core el grande action, for reporting back
+    eg_decks=np.append(np.where(estate._acard_round==sgs._round),[42])[:5]
+    if action<simple_grande._POWER_CARDS:
+      actions+=[(player_id,action+el_grande._ACT_POWERS)]
+    else:
+      actions+=[(player_id,eg_decks[action-simple_grande._POWER_CARDS]+el_grande._ACT_CARDS)]
+  return(actions)
 
 def castillo_scoring_order(state,player=-1):
   #order in which players will do their (secret) castillo choice - needed for castillo subgame
