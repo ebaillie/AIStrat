@@ -4,6 +4,7 @@ import el_grande
 import simple_grande
 from open_spiel.python.algorithms import tabular_qlearner
 from open_spiel.python import rl_environment
+import random
 
 def internal_rep(state,pl):
   if type(pl)==str:
@@ -29,6 +30,14 @@ def next_turn_position(state,pl):
   startplayer = int(np.log2(state._pcard_state[pcs[0]]))
   return((pl-startplayer)%(state._num_players)+1)
 
+def cabs_to_play(state,pl):
+  pl=internal_rep(state,pl)
+  #how many caballeros will be available by the time action card is played?
+  power_list = np.where(state._pcard_state & pow(2,pl) == pow(2,pl))[0]
+  assert(len(power_list)==1)
+  move_cabs=min(state._board_state[state._game._province_idx,pl],state._game._power_cabs[power_list[0]])
+  return(int(state._board_state[state._game._court_idx,pl]+move_cabs))
+
 def cards_out(state):
   cards=np.append(np.where(state._acard_round==state._get_round()),[42])[:5] 
   return[state._game._cardtrack[c] for c in cards]
@@ -38,7 +47,7 @@ def board_cabs(state,player):
   player=internal_rep(state,player)
   return int(sum(state._board_state[:state._game._num_ext_regions,player]))
 
-def playMetaFromState(estate,qagent):
+def playMetaFromState(estate,qagent,stopAfterPower=False):
   #returns playerid/el_grande action pairs for projected power and action phases,
   #skipping other phases
 
@@ -60,9 +69,11 @@ def playMetaFromState(estate,qagent):
     #translate actions back to core el grande action, for reporting back
     eg_decks=np.append(np.where(estate._acard_round==sgs._round),[42])[:5]
     if action<simple_grande._POWER_CARDS:
-      actions+=[(player_id,action+el_grande._ACT_POWERS)]
+      actions+=[(player_id,int(action+el_grande._ACT_POWERS))]
     else:
-      actions+=[(player_id,eg_decks[action-simple_grande._POWER_CARDS]+el_grande._ACT_CARDS)]
+      if stopAfterPower:
+        return(actions)
+      actions+=[(player_id,int(eg_decks[action-simple_grande._POWER_CARDS]+el_grande._ACT_CARDS))]
   return(actions)
 
 def castillo_scoring_order(state,player=-1):
@@ -104,6 +115,18 @@ def getContentions(state,pl):
       contentions+=len(np.where(state._board_state[r,:state._num_players]==state._board_state[r,pl])[0])-1
   return contentions
 
+def getContentionRegions(state,pl):
+  pl=internal_rep(state,pl)
+  contentions=np.full(state._game._num_regions,-1)
+  for r in range(state._game._num_regions):
+    if state._board_state[r,pl]>0:
+      contentions[r]=len(np.where(state._board_state[r,:state._num_players]==state._board_state[r,pl])[0])-1
+  if max(contentions)>0:
+    return np.where(contentions==max(contentions))[0].tolist()
+  else:
+    return []
+
+
 def getMaxCabcountRegions(state,withCastillo=False):
   regions=state._game._num_regions
   if withCastillo:
@@ -123,7 +146,7 @@ def getMaxCabcountRegionVals(state,pl,withCastillo=False):
     vals+=state._score_one_region(r)
   return(keyRegions,state._scores_as_margins(vals)[pl])
 
-def getMinCabcountRegionVals(state,withCastillo=False):
+def getMinCabcountRegionVals(state,pl,withCastillo=False):
   regions=state._game._num_regions
   pl=internal_rep(state,pl)
   if withCastillo:
@@ -159,7 +182,7 @@ def getTargets(state, pl, stopRegion=-1, stopStep=5, validList=None):
     testState = state.clone()
     testState._board_state[:regions,pl]+=testPieces
     defaultPoints=[testState._score_one_region(r) for r in range(regions)]
-    defaultPointGap = getPointGap(sum(defaultPoints),pl)
+    defaultPointGap = _getPointGap(sum(defaultPoints),pl)
     bestPointGap = defaultPointGap #floor for improvement
     bestRegion = -2 #equivalent to 'stay in court'
         
@@ -168,7 +191,7 @@ def getTargets(state, pl, stopRegion=-1, stopStep=5, validList=None):
     for r in validRegions:
       #check the effect on the point gap of subbing in each testPoints in turn
       testArray=[testPoints[reg] if reg==r else defaultPoints[reg] for reg in range(regions)]
-      pointGap = getPointGap(sum(testArray),pl)
+      pointGap = _getPointGap(sum(testArray),pl)
       if pointGap>bestPointGap or (pointGap==bestPointGap and r==stopRegion):
         bestPointGap=pointGap
         bestRegion=r
@@ -200,6 +223,8 @@ def getBestKingRegions(state,pl,cabsAvail=5,validList=None):
     testState = state.clone()
     testState._move_king(r)
     targets=[t for t in targetList if t in testState._game._neighbors[r]]
+    if len(targets)==0:
+      continue
     if len(targets)<cabsAvail:
       targets=targets+[random.choice(targets) for i in range(cabsAvail-len(targets))]
     targets=targets[:cabsAvail]
@@ -209,7 +234,7 @@ def getBestKingRegions(state,pl,cabsAvail=5,validList=None):
     pointGaps[r]=changes[pl]-initMargin[pl]
   
   bestValue=max(pointGaps) 
-  return(np.where(pointGaps==bestValue),bestValue) 
+  return(np.where(pointGaps==bestValue)[0],int(bestValue)) 
 
 def getBestScbdRegions(state,pl):
   pl=internal_rep(state,pl)
@@ -223,8 +248,24 @@ def getBestScbdRegions(state,pl):
       testState._move_scoreboard(s,r)
       changes=testState._scores_as_margins(testState._score_all_regions())
       pointGaps[r,s]=changes[pl]-initMargin[pl]
-  bestValue=max(pointGaps.reshape(regions*scbds,1))
+  bestValue=max(pointGaps.reshape(regions*scbds,1))[0]
   scbdregs=np.where(pointGaps==bestValue)
   whichregs=scbdregs[0]
   whichboards=scbdregs[1]
-  return(whichregs,whichboards,bestValue)
+  return(whichregs,whichboards,int(bestValue))
+
+def _getPointGap(pointArray, player):
+  top = max(pointArray)
+  next=0
+  nextArr=[p for p in pointArray if p!=top]
+  if len(nextArr)>0:
+    next = max([p for p in pointArray if p!=top])
+  if pointArray[player]==top:
+    #if equal firsts, gap is zero
+    if len(np.where(pointArray==top)[0])>1:
+      return 0
+    else:
+      return top-next
+  else:
+    return pointArray[player]-top
+
