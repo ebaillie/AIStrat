@@ -56,7 +56,7 @@ class CastilloGameState(pyspiel.State):
     """
 
     def __init__(self, game):
-        super().__init__(self,game)
+        super().__init__(game)
         self._game = game
         self._cur_player = 0
         gameJSON=json.loads(game._parent_game_state)
@@ -112,7 +112,7 @@ class CastilloGameState(pyspiel.State):
         final_scores=np.full(self._num_players,0)
         for k in ranks.keys():
             if ranks[k]>0 and ranks[k]<=3:
-                final_scores[k]=self._rewards[region-1][ranks[k]-1]
+                final_scores[k]=self._rewards[str(region-1)][ranks[k]-1]
             if ranks[k]==1:
                 if self._grandes[k]==region:
                     final_scores[k]=final_scores[k]+2
@@ -172,6 +172,9 @@ class CastilloGameState(pyspiel.State):
             return []
         else:
             return [1]*_NUM_REGIONS
+
+    def apply_action(self, action):
+        self.do_apply_action(action)
 
     def do_apply_action(self, action):
         """Applies the specified action to the state. Action+1 = regionID of region to be moved to"""
@@ -279,6 +282,7 @@ class CastilloGameState(pyspiel.State):
         return myclone
     
 
+_games=[]
 
 class CastilloGame(pyspiel.Game):
     """El Grande Castillo Game - subgame of El Grande which decides on the optimum positioning of
@@ -291,11 +295,12 @@ class CastilloGame(pyspiel.Game):
     king - region ID of king
     """
 
-    def __init__(self,params={"state":pyspiel.GameParameter('')}):
-        super().__init__(self, _GAME_TYPE, _GAME_INFO, params or dict())
+    def __init__(self,params={"state":""}):
+        super().__init__(_GAME_TYPE, _GAME_INFO, params)
+        _games.append(self)
         #state input as json with keys players,rewards,board,grandes,king
         if params.get("state",None) is not None:
-            state=params["state"].string_value() 
+            state=params["state"] 
             if state=='':
                 state=_DEFAULT_STATE
             self._parent_game_state=state 

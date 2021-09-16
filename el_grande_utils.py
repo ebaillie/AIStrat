@@ -1,10 +1,42 @@
 #utility functions for extracting metrics and information from el_grande game or game state
 import numpy as np
+import json
 import el_grande
 import simple_grande
+import castillo_game
 from open_spiel.python.algorithms import tabular_qlearner
 from open_spiel.python import rl_environment
 import random
+import mcts_ext as mcts
+
+class RegionBandit:
+  """Class for running multi-arm bandit evaluations of simultaneous secret region choices"""
+
+  def __init__(self, arm_count,epsilon):
+    self.arm_count=arm_count
+    self.arm_vals = np.zeros(arm_count) # cumulative values
+    self.arm_choices = np.full(arm_count,0.001) # cumulative counts,with small eps for div-by-zero
+    self.epsilon=epsilon
+
+  def update(self,arm,val):
+    self.arm_choices[arm] += 1
+    self.arm_vals[arm]+=val
+
+  def select(self,embargo=[],with_eps=True):
+    choices=[a for a in range(self.arm_count) if not a in embargo]
+    eps_rand=random.random()
+    if eps_rand<self.epsilon and with_eps:
+      return random.choice(choices)
+    else:
+      meanvals=[self.arm_vals[c]/self.arm_choices[c] for c in choices]
+      best_choices=[choices[c] for c in range(len(choices)) if meanvals[c]==max(meanvals)]
+      return random.choice(best_choices)
+
+  def reward(self,arm):
+    return self.arm_vals[arm]/self.arm_choices[arm]
+
+  def mean_reward(self):
+    return np.sum(self.arm_vals)/np.sum(self.arm_choices)
 
 def internal_rep(state,pl):
   if type(pl)==str:
@@ -93,7 +125,7 @@ def castillo_game_string(state,player=-1):
   board=np.full(state._num_players*state._game._num_ext_regions,0)
   grandes=np.full(state._num_players,0)
   scores=np.full(state._num_players,0)
-  new_idxs=castillo_scoring_order(player)
+  new_idxs=castillo_scoring_order(state,player)
   for p in new_idxs:
     idx=new_idxs[p]
     for r in range(state._game._num_regions):
@@ -106,6 +138,148 @@ def castillo_game_string(state,player=-1):
   state_vals["grandes"]=grandes.tolist()
   state_vals["scores"]=scores.tolist()
   return json.dumps(state_vals)
+
+def predictCastilloMoves(state,player=-1):
+  #predict likely distribution of player/opponent moves in castillo/scoring round
+  player=internal_rep(state,player)
+  advice={}
+  if state._board_state[state._game._castillo_idx,player]==0:
+    return advice 
+  cabMovers = [p for p in range(state._num_players) if state._board_state[state._game._castillo_idx,p]>0]
+  if len(cabMovers)<=1:
+    return advice
+
+  sim_count=10
+  sim_iterations=100
+
+  choices=np.full((state._num_players,state._num_players*sim_count),0)
+  for sim_player in range(state._num_players):
+    temp_choices = np.full((state._num_players,sim_count),0)
+    cg=castillo_game.CastilloGame({"state":castillo_game_string(state,sim_player)})
+    cgs=cg.new_initial_state()
+    rng=np.random.RandomState()
+    eval=mcts.RandomRolloutEvaluator(1,rng)
+    mbot = mcts.MCTSBot(cg,2,sim_iterations,eval,random_state=rng,solve=True,verbose=False)
+    for i in range(sim_count):
+      c,cc,vc,_=mbot.multi_step(cgs,"all") #do sim runs, reporting back whole game history
+      #pad out truncated multi-steps, where not all players have castillo pieces
+      optpad=np.full(state._num_players-len(cc),9).tolist() 
+      temp_choices[:,i]=cc+optpad
+    #convert back to indexing by core game player numbers
+    idxs=castillo_scoring_order(state,sim_player)
+    for p in idxs:
+      choices[p,sim_player*sim_count:(sim_player+1)*sim_count]=temp_choices[idxs[p]]
+
+  rankvals=np.full(state._game._num_regions,0.0)
+  scorevals=np.full(state._game._num_regions,0.0)
+  #for each set of choices, calculate the payoff for the selected player in terms of raw score and rank improvement 
+  startscores=state._score_all_regions()
+  for it in range (state._game._num_regions):
+    if it==state._king_region():
+      rankvals[it]=float('-inf')
+      continue
+    for tries in range(sim_count): 
+      tempstate=state.clone()
+      for p in range(state._num_players):
+        if p==player:
+          tempstate._quickmove_cabs(state._game._castillo_idx,it,-1,p)
+        else:
+          tempstate._quickmove_cabs(state._game._castillo_idx,random.choice(choices[p,:]),-1,p)
+
+      newscores=tempstate._score_all_regions()
+      rankvals[it]+=round(state._scores_as_margins(startscores+newscores)[player],2)
+      scorevals[it]+=tempstate._score_one_region(it)[player]
+
+  rank_expect=rankvals/sim_count
+  score_expect=scorevals/sim_count 
+  #format as playerid:{region number:proportion} for relevant players
+  for pl in cabMovers:
+    unique, counts = np.unique(choices[pl,:], return_counts=True)
+    pcount = dict(zip(unique.tolist(), (counts/sum(counts)).tolist()))
+    advice[pl] = {p:int(pcount[p]) for p in pcount}
+  return advice,score_expect.tolist(),rank_expect.tolist()
+
+def makeBanditRegionExclusions(state,cardName):
+  king_reg=state._king_region()
+  if cardName=="Deck4_Special":
+    return {p:[king_reg] for p in range(state._num_players)}
+  elif cardName=="Deck2_Province":
+    return {p:[king_reg]+[r for r in range(state._game._num_regions) 
+                if state._region_cabcount(r,p)<1] for p in range(state._num_players)}
+  elif cardName=="Deck2_Provinceall":
+    return {p:[king_reg]+[r for r in range(state._game._num_regions) 
+                if state._region_cabcount(r,p)<2] for p in range(state._num_players)}
+  elif cardName=="Deck4_Eviction":
+    evictor=state._rsp_player
+    secret=state._secret_region(evictor)
+    return {p:[king_reg,secret] for p in range(state._num_players)}
+
+def runBandits(state,bandit_array,exclusions,start_scores):
+  estate=state.clone()
+  choices=np.full(estate._num_players,0)
+  if cardName=="Deck4_Special":
+    for p in range(estate._num_players):
+      choices[p]=bandit_array[p].select(embargo=exclusions[p])
+      estate._set_secret_region(choices[p],p)
+    estate._unique_score()
+    values=estate._scores_as_margins(estate._turn_state[el_grande._ST_TN_SCORES:el_grande._ST_TN_SCORES+state._num_players])
+  elif cardName=="Deck2_Province":
+    for p in range(estate._num_players):
+      choices[p]=bandit_array[p].select(embargo=exclusions[p])
+    for p in range(estate._num_players):
+      fromreg=int(choices[p])
+      estate._quickmove_cabs(fromreg,estate._game._province_idx,2,p)
+    values=estate._scores_as_margins(estate._score_all_regions()+start_scores)
+  elif cardName=="Deck2_Provinceall":
+    for p in range(estate._num_players):
+      choices[p]=bandit_array[p].select(embargo=exclusions[p])
+    for p in range(estate._num_players):
+      fromreg=int(choices[p])
+      estate._quickmove_cabs(fromreg,estate._game._province_idx,-1,p)
+    values=estate._scores_as_margins(estate._score_all_regions()+start_scores)
+  elif cardName=="Deck4_Eviction":
+    fromreg=estate._secret_region(estate._rsp_player)
+    choices[estate._rsp_player]=fromreg
+    for p in range(state._num_players):
+      if p!=estate._rsp_player:
+        choices[p]=bandit_array[p].select(embargo=exclusions[p])
+    for p in range(state._num_players):
+      if p!=estate._rsp_player:
+        toreg=int(choices[p])
+        estate._quickmove_cabs(fromreg,toreg,-1,p)
+    values=estate._scores_as_margins(estate._score_all_regions()+start_scores)
+
+  return choices,values
+
+
+def banditResponse(state,pl,cardName):
+  """Multi-arm Bandit code to generate response predictions and explanation info for the simultaneous-choice
+     response situations in El Grande: Eviction (choose region to move to),Province and Provinceall (choose region
+     to evict from), and Unique Score"""
+  pl=internal_rep(state,pl)
+  bandit_runs=2000
+  eval_runs=100
+  eps=0.1
+  bandit_array=[RegionBandit(state._game._num_regions,eps) for i in range(state._num_players)]
+  start_scores=state._turn_state[el_grande._ST_TN_SCORES:el_grande._ST_TN_SCORES+state._num_players]
+  choices=np.full(state._num_players,0)
+  exclusions=makeBanditRegionExclusions(state,cardName)
+  for i in range(bandit_runs):
+    choices,values = runBandits(state,bandit_array,exclusions,start_scores)
+    for p in range(state._num_players):
+      bandit_array[p].update(choices[p],values[p])
+  rv=[bandit_array[b].select(embargo=exclusions[b],with_eps=False) for b in range(state._num_players)]
+  rewards={r:bandit_array[pl].reward(r) for r in range(state._game._num_regions) if r not in exclusions[pl]}
+  predictions={p:rv[p] for p in range(state._num_players) if p!=pl}
+  #do some evaluation runs to see how much variance there is in the prediction
+  player_region=rv[pl]
+  exclusions[pl]=[r for r in range(state._game._num_regions) if r!=player_region]
+  player_rewards=[]
+  for i in range(eval_runs):
+    choices,values = runBandits(state,bandit_array,exclusions,start_scores)
+    player_rewards.append(values[pl])
+  return rv,rewards,predictions,float(np.std(player_rewards))
+
 
 def getContentions(state,pl):
   pl=internal_rep(state,pl)
