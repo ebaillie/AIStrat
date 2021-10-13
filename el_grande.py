@@ -1613,13 +1613,13 @@ class ElGrandeGameState(pyspiel.State):
             self._move_one_cab(fromRegion, toRegion, ofPlayer)        
             self._after_action_step() 
     
-    def action_to_string(self, arg0, arg1=None, withPlayer=True):
+    def action_to_string(self, arg0, arg1=None, withPlayer=True, hideSecret=False):
         """Action -> string. Args either (player, action) or (action)."""
         player = self.current_player() if arg1 is None else arg0
         action = arg0 if arg1 is None else arg1
-        return self._action_output(action,player,withPlayer,json=False)
+        return self._action_output(action,player,withPlayer,False,hideSecret)
 
-    def _action_output(self,action,player,withPlayer=False,json=False):
+    def _action_output(self,action,player,withPlayer=False,json=False,hideSecret=False):
         actionString=""
         jsondata=[]
         if action>=_ACT_CARDS and action < _ACT_CARDS + self._game._num_action_cards:
@@ -1642,7 +1642,10 @@ class ElGrandeGameState(pyspiel.State):
             actionString = "Card action (2nd choice) before {0} placement".format(self._game._config_data['units']['caballero'])
             jsondata={"decision":"card"}
         elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + self._game._num_cab_areas:
-            actionString = "Choose "+ self._game._regions[action - _ACT_CHOOSE_SECRETS]
+            if hideSecret:
+              actionString = "Choose secret region"
+            else:
+              actionString = "Choose "+ self._game._regions[action - _ACT_CHOOSE_SECRETS]
             jsondata={"choose":self._game._regions[action - _ACT_CHOOSE_SECRETS]}
         elif action >= _ACT_MOVE_GRANDES and action < _ACT_MOVE_GRANDES + self._game._num_regions:
             actionString = "{0} to {1}".format(self._game._config_data['units']['grande'],self._game._regions[action - _ACT_MOVE_GRANDES])

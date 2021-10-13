@@ -176,7 +176,7 @@ def predictCastilloMoves(state,player=-1):
   startscores=state._score_all_regions()
   for it in range (state._game._num_regions):
     if it==state._king_region():
-      rankvals[it]=float('-inf')
+      rankvals[it]=-1000
       continue
     for tries in range(sim_count): 
       tempstate=state.clone()
@@ -196,7 +196,7 @@ def predictCastilloMoves(state,player=-1):
   for pl in cabMovers:
     unique, counts = np.unique(choices[pl,:], return_counts=True)
     pcount = dict(zip(unique.tolist(), (counts/sum(counts)).tolist()))
-    advice[pl] = {p:int(pcount[p]) for p in pcount}
+    advice[pl] = {p:float(pcount[p]) for p in pcount}
   return advice,score_expect.tolist(),rank_expect.tolist()
 
 def makeBanditRegionExclusions(state,cardName):
@@ -205,16 +205,16 @@ def makeBanditRegionExclusions(state,cardName):
     return {p:[king_reg] for p in range(state._num_players)}
   elif cardName=="Deck2_Province":
     return {p:[king_reg]+[r for r in range(state._game._num_regions) 
-                if state._region_cabcount(r,p)<1] for p in range(state._num_players)}
+                if state._region_cabcount(r,p)<2] for p in range(state._num_players)}
   elif cardName=="Deck2_Provinceall":
     return {p:[king_reg]+[r for r in range(state._game._num_regions) 
-                if state._region_cabcount(r,p)<2] for p in range(state._num_players)}
+                if state._region_cabcount(r,p)<1] for p in range(state._num_players)}
   elif cardName=="Deck4_Eviction":
     evictor=state._rsp_player
     secret=state._secret_region(evictor)
     return {p:[king_reg,secret] for p in range(state._num_players)}
 
-def runBandits(state,bandit_array,exclusions,start_scores):
+def runBandits(state,bandit_array,exclusions,start_scores,cardName):
   estate=state.clone()
   choices=np.full(estate._num_players,0)
   if cardName=="Deck4_Special":
@@ -265,7 +265,7 @@ def banditResponse(state,pl,cardName):
   choices=np.full(state._num_players,0)
   exclusions=makeBanditRegionExclusions(state,cardName)
   for i in range(bandit_runs):
-    choices,values = runBandits(state,bandit_array,exclusions,start_scores)
+    choices,values = runBandits(state,bandit_array,exclusions,start_scores,cardName)
     for p in range(state._num_players):
       bandit_array[p].update(choices[p],values[p])
   rv=[bandit_array[b].select(embargo=exclusions[b],with_eps=False) for b in range(state._num_players)]
@@ -276,7 +276,7 @@ def banditResponse(state,pl,cardName):
   exclusions[pl]=[r for r in range(state._game._num_regions) if r!=player_region]
   player_rewards=[]
   for i in range(eval_runs):
-    choices,values = runBandits(state,bandit_array,exclusions,start_scores)
+    choices,values = runBandits(state,bandit_array,exclusions,start_scores,cardName)
     player_rewards.append(values[pl])
   return rv,rewards,predictions,float(np.std(player_rewards))
 
@@ -443,3 +443,18 @@ def _getPointGap(pointArray, player):
   else:
     return pointArray[player]-top
 
+def stableRegions(bfr,aft,pl):
+  #score regions according to how stable they are before and after wrt player
+  #1 = fully stable, 0.5=some change but no rank change or moved grande/king, 0=rank changed or grande/king movement
+
+  pl=internal_rep(bfr,pl)
+  regscores=np.full(bfr._game._num_ext_regions,0.0)
+  gk=el_grande._ST_BDY_GRANDE_KING
+  for r in range(bfr._game._num_ext_regions):
+    if all(bfr._board_state[r,0:gk+1]==aft._board_state[r,0:gk+1]):
+      regscores[r]=1
+    elif bfr._rank_region(r).get(pl,4)==aft._rank_region(r).get(pl,4) and bfr._board_state[r,gk]==aft._board_state[r,gk]:
+      #some change but rank and g/k okay
+      regscores[r]=0.5
+
+  return regscores.tolist()

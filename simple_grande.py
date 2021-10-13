@@ -259,7 +259,8 @@ class SimpleGrandeGameState(pyspiel.State):
         turn_position = 4-np.count_nonzero(self._deck_available)
         #reduce score proportionately if you don't have enough cabs to play this deck effectively
         play_factor=moved_cabs/deck
-        score = _DECKVALS[(self._round-1)][turn_position][deck-1]*play_factor
+        play_reduction=max(deck-moved_cabs,0)
+        score = _DECKVALS[(self._round-1)][turn_position][deck-1]*play_factor - 2*play_reduction
 
         return score
             
