@@ -94,12 +94,12 @@ def playMetaFromState(estate,qagent,stopAfterPower=False):
   while not time_step.last():
     player_id = time_step.observations["current_player"]
     qagent._player_id=player_id
+    #translate actions back to core el grande action, for reporting back
+    eg_decks=np.append(np.where(estate._acard_round==sgs._round),[42])[:5]
     #note - can make this close to deterministic by changing is_evaluation to True
     agent_output =qagent.step(time_step, is_evaluation=False)
     action=agent_output.action
     time_step = env.step([action])
-    #translate actions back to core el grande action, for reporting back
-    eg_decks=np.append(np.where(estate._acard_round==sgs._round),[42])[:5]
     if action<simple_grande._POWER_CARDS:
       actions+=[(player_id,int(action+el_grande._ACT_POWERS))]
     else:
@@ -204,11 +204,23 @@ def makeBanditRegionExclusions(state,cardName):
   if cardName=="Deck4_Special":
     return {p:[king_reg] for p in range(state._num_players)}
   elif cardName=="Deck2_Province":
-    return {p:[king_reg]+[r for r in range(state._game._num_regions) 
-                if state._region_cabcount(r,p)<2] for p in range(state._num_players)}
+    excl={}
+    for p in range(state._num_players):
+      testexcl=list(set([king_reg]+[r for r in range(state._game._num_regions) if state._region_cabcount(r,p)<2]))
+      if len(testexcl)==state._game._num_regions:
+        testexcl=list(set([king_reg]+[r for r in range(state._game._num_regions) if state._region_cabcount(r,p)<1]))
+      if len(testexcl)==state._game._num_regions:
+        testexcl=[king_reg]
+      excl[p]=testexcl
+    return excl 
   elif cardName=="Deck2_Provinceall":
-    return {p:[king_reg]+[r for r in range(state._game._num_regions) 
-                if state._region_cabcount(r,p)<1] for p in range(state._num_players)}
+    excl={}
+    for p in range(state._num_players):
+      testexcl=list(set([king_reg]+[r for r in range(state._game._num_regions) if state._region_cabcount(r,p)<1]))
+      if len(testexcl)==state._game._num_regions:
+        testexcl=[king_reg]
+      excl[p]=testexcl
+    return excl 
   elif cardName=="Deck4_Eviction":
     evictor=state._rsp_player
     secret=state._secret_region(evictor)

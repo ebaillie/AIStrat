@@ -150,6 +150,7 @@ class ElGrandeGameState(pyspiel.State):
             #start a game with a random player assortment
             self._players=["P"+str(i) for i in range(self._num_players)]
             self._generate_board({'Players':self._players})
+        self._init_score_details()
 
     # Helper functions (not part of the OpenSpiel API).
     
@@ -248,7 +249,11 @@ class ElGrandeGameState(pyspiel.State):
     def _secret_region(self,player_id=-1):
         if player_id<0:
             player_id=self._cur_player
-        return int(np.where(self._board_state[:,_ST_BDY_SECRET]& pow(2,player_id) > 0)[0][0])
+        sr=np.where(self._board_state[:,_ST_BDY_SECRET]& pow(2,player_id) > 0)[0]
+        if len(sr)>0:
+            return int(sr[0])
+        else:
+            return -1
     
     def _region_presence(self,player,withCastillo=True):
         #in how many regions does this player have any pieces?
@@ -907,11 +912,18 @@ class ElGrandeGameState(pyspiel.State):
                     final_scores[k]=final_scores[k]+2
         #print("rewards for region "+str(region))
         #print(final_scores)
+        if(self._get_current_phase_name()=='scoring'):
+          self._score_details['scoring'][region]=(ranks,list(final_scores))
+        else:
+          self._score_details['card'][region]=(ranks,list(final_scores))
         return final_scores
     
-    def _score_all_regions(self):
+    def _score_all_regions(self,withCastillo=True):
         final_scores=np.full(self._num_players,0)
-        for r in range(self._game._num_ext_regions):
+        score_range=self._game._num_ext_regions
+        if not withCastillo:
+          score_range=self._game._num_regions
+        for r in range(score_range):
             final_scores = final_scores+self._score_one_region(r)
         return final_scores
    
@@ -946,7 +958,10 @@ class ElGrandeGameState(pyspiel.State):
  
     def _init_move_info(self):
         self._movement_tracking = {'from':[],'to':[],'cabs':[],'patterns':[],'queue':[],'player':0,'lockfrom':False,'lockto':False,'moving':False,'prev':[],'fromcondition':0}
-        
+
+    def _init_score_details(self):    
+        self._score_details={'scoring':{},'card':{},'secret':[self._secret_region(p) for p in range(self._num_players)]}
+
     def _setup_action(self,alt_action=0):
         #set up info to enable multi-step actions, or flag instant actions
         
@@ -1355,16 +1370,18 @@ class ElGrandeGameState(pyspiel.State):
         #score the castillo, move castillo pieces out, then score everything
         new_scores=self._score_one_region(self._game._castillo_idx)
         self._move_castillo_pieces()
-        new_scores+=self._score_all_regions()
+        new_scores+=self._score_all_regions(withCastillo=False)
         self._set_rewards(new_scores)
         self._board_state[:,_ST_BDY_SECRET]=0 
         if self._turn_state[_ST_TN_ROUND]==self._end_turn:
-            # turn scores into win points
-            self._win_points = self._set_win_points()
-            self._cur_player = pyspiel.PlayerId.TERMINAL
-            self._is_terminal=True
+            self._end_game()
         else:
             self._update_players_after_action()
+
+    def _end_game(self):
+        self._win_points = self._set_win_points()
+        self._cur_player = pyspiel.PlayerId.TERMINAL
+        self._is_terminal=True
 
     def _set_win_points(self):
         points=np.full(self._num_players,0)
@@ -1543,6 +1560,8 @@ class ElGrandeGameState(pyspiel.State):
         self._history.append(action)
         self._set_rewards(np.full(self._num_players,0))
         self._game_step+=1
+        
+        self._init_score_details()
 
         if action>=_ACT_CARDS and action < _ACT_CARDS + self._game._num_action_cards:
             self._acard_state[action - _ACT_CARDS] = _ST_AC_CHOSEN
@@ -1565,6 +1584,7 @@ class ElGrandeGameState(pyspiel.State):
         elif action >= _ACT_CHOOSE_SECRETS and action < _ACT_CHOOSE_SECRETS + self._game._num_cab_areas:
             selRegion = (action - _ACT_CHOOSE_SECRETS)
             self._set_secret_region(selRegion)
+            self._score_details['secret'][self._cur_player]=selRegion
             if self._turn_state[_ST_TN_PHASE]==_ST_PHASE_SCORE:
                 self._after_score_step()
             elif self._turn_state[_ST_TN_PHASE]==_ST_PHASE_RESPONSE:
@@ -1611,7 +1631,11 @@ class ElGrandeGameState(pyspiel.State):
             toRegion = ((action- _ACT_CAB_MOVES)%(self._game._num_cab_areas * _MAX_PLAYERS))//_MAX_PLAYERS
             ofPlayer = (action- _ACT_CAB_MOVES)%_MAX_PLAYERS
             self._move_one_cab(fromRegion, toRegion, ofPlayer)        
-            self._after_action_step() 
+            self._after_action_step()
+        
+        if self._turn_state[_ST_TN_ROUND]>self._end_turn:
+            self._end_game()
+         
     
     def action_to_string(self, arg0, arg1=None, withPlayer=True, hideSecret=False):
         """Action -> string. Args either (player, action) or (action)."""
