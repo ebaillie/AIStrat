@@ -174,19 +174,24 @@ def predictCastilloMoves(state,player=-1):
   scorevals=np.full(state._game._num_regions,0.0)
   #for each set of choices, calculate the payoff for the selected player in terms of raw score and rank improvement 
   startscores=state._score_all_regions()
+  rankarray=[]
   for it in range (state._game._num_regions):
     if it==state._king_region():
       rankvals[it]=-1000
       continue
     for tries in range(sim_count): 
       tempstate=state.clone()
+      tempchoice=np.full(state._num_players,0)
       for p in range(state._num_players):
         if p==player:
+          tempchoice[p]=it
           tempstate._quickmove_cabs(state._game._castillo_idx,it,-1,p)
         else:
-          tempstate._quickmove_cabs(state._game._castillo_idx,random.choice(choices[p,:]),-1,p)
-
+          tempchoice[p]=random.choice(choices[p,:])
+          tempstate._quickmove_cabs(state._game._castillo_idx,tempchoice[p],-1,p)
       newscores=tempstate._score_all_regions()
+      newrank=round(state._scores_as_margins(startscores+newscores)[player],2)
+      rankarray.append((list(tempchoice),newscores[player],newrank))
       rankvals[it]+=round(state._scores_as_margins(startscores+newscores)[player],2)
       scorevals[it]+=tempstate._score_one_region(it)[player]
 
@@ -234,7 +239,7 @@ def runBandits(state,bandit_array,exclusions,start_scores,cardName):
       choices[p]=bandit_array[p].select(embargo=exclusions[p])
       estate._set_secret_region(choices[p],p)
     estate._unique_score()
-    values=estate._scores_as_margins(estate._turn_state[el_grande._ST_TN_SCORES:el_grande._ST_TN_SCORES+state._num_players])
+    values=estate._scores_as_margins(estate._current_score())
   elif cardName=="Deck2_Province":
     for p in range(estate._num_players):
       choices[p]=bandit_array[p].select(embargo=exclusions[p])
@@ -260,9 +265,43 @@ def runBandits(state,bandit_array,exclusions,start_scores,cardName):
         toreg=int(choices[p])
         estate._quickmove_cabs(fromreg,toreg,-1,p)
     values=estate._scores_as_margins(estate._score_all_regions()+start_scores)
+  elif cardName=="scoring":
+    castillo_score=estate._score_one_region(estate._game._castillo_idx)
+    for p in range(estate._num_players):
+      choices[p]=bandit_array[p].select(embargo=exclusions[p])
+    for p in range(state._num_players):
+      estate._quickmove_cabs(estate._game._castillo_idx,int(choices[p]),-1,p)
+    values=estate._scores_as_margins(estate._score_all_regions()+start_scores+castillo_score)
+    
 
   return choices,values
 
+def banditScoring(state,pl):
+  """Multi-arm Bandit code to generate predictions and explanation info for the scoring round
+     """
+  pl=internal_rep(state,pl)
+  bandit_runs=2000
+  eval_runs=100
+  eps=0.1
+  bandit_array=[RegionBandit(state._game._num_regions,eps) for i in range(state._num_players)]
+  start_scores=state._current_score()
+  choices=np.full(state._num_players,0)
+  exclusions={p:[state._king_region()] for p in range(state._num_players)}
+  for i in range(bandit_runs):
+    choices,values = runBandits(state,bandit_array,exclusions,start_scores,"scoring")
+    for p in range(state._num_players):
+      bandit_array[p].update(choices[p],values[p])
+  rv=[bandit_array[b].select(embargo=exclusions[b],with_eps=False) for b in range(state._num_players)]
+  rewards={r:bandit_array[pl].reward(r) for r in range(state._game._num_regions) if r not in exclusions[pl]}
+  predictions={p:rv[p] for p in range(state._num_players) if p!=pl}
+  #do some evaluation runs to see how much variance there is in the prediction
+  player_region=rv[pl]
+  exclusions[pl]=[r for r in range(state._game._num_regions) if r!=player_region]
+  player_rewards=[]
+  for i in range(eval_runs):
+    choices,values = runBandits(state,bandit_array,exclusions,start_scores,"scoring")
+    player_rewards.append(values[pl])
+  return rv,rewards,predictions,float(np.std(player_rewards))
 
 def banditResponse(state,pl,cardName):
   """Multi-arm Bandit code to generate response predictions and explanation info for the simultaneous-choice
@@ -273,7 +312,7 @@ def banditResponse(state,pl,cardName):
   eval_runs=100
   eps=0.1
   bandit_array=[RegionBandit(state._game._num_regions,eps) for i in range(state._num_players)]
-  start_scores=state._turn_state[el_grande._ST_TN_SCORES:el_grande._ST_TN_SCORES+state._num_players]
+  start_scores=state._current_score()
   choices=np.full(state._num_players,0)
   exclusions=makeBanditRegionExclusions(state,cardName)
   for i in range(bandit_runs):
