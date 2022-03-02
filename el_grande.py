@@ -286,7 +286,7 @@ class ElGrandeGameState(pyspiel.State):
     def _card_moves(self):
         # return 0==instant,1=1-step,2=2 or more
         courtstr=self._game._config_data['court']
-        provincestr=self._game._config_data['court']
+        provincestr=self._game._config_data['province']
         card = self._get_current_card()
         if card['actiontype']=='move':
             fromreg=card['details']['from']['region']
@@ -1503,7 +1503,9 @@ class ElGrandeGameState(pyspiel.State):
                     actions.append(_ACT_DECIDE_ACT_ALT)
             elif self._turn_state[_ST_TN_PHASE] in [_ST_PHASE_CARD1,_ST_PHASE_CARD2]:
                 if self._card_moves()==_ST_STEPS_0:
-                    actions = [_ACT_SKIP,_ACT_TRIGGER]
+                    actions = [_ACT_TRIGGER]
+                    if self._get_current_card()['actiontype']=='score':
+                      actions.append(_ACT_SKIP)
                 else:
                     actions = actions + self._set_valid_actions_from_card() + [_ACT_SKIP]
             elif self._turn_state[_ST_TN_PHASE] in [_ST_PHASE_CAB1,_ST_PHASE_CAB2]:
