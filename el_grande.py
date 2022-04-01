@@ -357,7 +357,7 @@ class ElGrandeGameState(pyspiel.State):
 
     #turn all relevant state info from DB format into game format
     def _load_game_state(self,jsonData):
-        self._history = jsonData.get('history',[])
+        self._history = jsonData.get('history',[]).copy()
         self._blank_board()
         self._state_add_players(jsonData['players'])
         self._objectives=jsonData.get('objectives',[_SCORE_ADV for i in range(self._num_players)])
@@ -1255,7 +1255,9 @@ class ElGrandeGameState(pyspiel.State):
         while actions==[] and cabcondition>=0:
             actions = [(i + _ACT_CHOOSE_SECRETS) for i in range (self._game._num_regions) if 
                 self._region_cabcount(i,self._rsp_steps[0]['player'])>=cabcondition and not 
-                self._region_has_king(i)] + courtact
+                self._region_has_king(i)] 
+            if self._region_cabcount(self._game._court_idx,self._rsp_steps[0]['player'])>0:
+              actions+= courtact
             cabcondition -=1
 
         return actions
