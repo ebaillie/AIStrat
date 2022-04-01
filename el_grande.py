@@ -357,6 +357,7 @@ class ElGrandeGameState(pyspiel.State):
 
     #turn all relevant state info from DB format into game format
     def _load_game_state(self,jsonData):
+        self._end_turn = jsonData.get('end_turn',_MAX_TURNS)
         self._history = jsonData.get('history',[]).copy()
         self._blank_board()
         self._state_add_players(jsonData['players'])
@@ -382,6 +383,7 @@ class ElGrandeGameState(pyspiel.State):
 
     def _json_for_game_state(self):
         jsonData={}
+        jsonData['end_turn']=self._end_turn
         jsonData['history']=self._history.copy()
         jsonData['players']=self._json_for_players()
         jsonData['king']=self._json_for_king()
