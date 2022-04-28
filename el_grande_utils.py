@@ -227,9 +227,7 @@ def makeBanditRegionExclusions(state,cardName):
       excl[p]=testexcl
     return excl 
   elif cardName=="Deck4_Eviction":
-    evictor=state._rsp_player
-    secret=state._secret_region(evictor)
-    return {p:[king_reg,secret] for p in range(state._num_players)}
+    return {p:[king_reg] for p in range(state._num_players)}
 
 def runBandits(state,bandit_array,exclusions,start_scores,cardName):
   estate=state.clone()
